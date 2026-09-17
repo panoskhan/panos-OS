@@ -39,24 +39,35 @@ export class KhanOrchestrator {
     task.status = status;
 
     const plan: PlanStep[] = [
-      { id: "plan", title: `Decompose: ${goal}`, agent: "coding", permissions: ["workspace.read"] },
+      { id: "plan", title: `Decompose and prepare: ${goal}`, agent: "coding", permissions: ["workspace.read"] },
       { id: "qa", title: "Verify execution result", agent: "qa", permissions: ["workspace.read"] }
     ];
 
     const execution: ExecutionReport["execution"] = [];
+    status = transition(status, "executing");
+    task.status = status;
+
     for (const step of plan) {
       if (!this.permissions.allowed(step.permissions)) {
         status = transition(status, "waiting_approval");
         task.status = status;
-        break;
+        return {
+          task,
+          plan,
+          execution,
+          verification: { passed: false, checks: ["approval-required"] }
+        };
       }
-      status = transition(status, "executing");
-      task.status = status;
-      execution.push({ stepId: step.id, agent: step.agent, status: "completed", output: `${step.title} completed` });
-      status = transition(status, "verifying");
-      task.status = status;
+      execution.push({
+        stepId: step.id,
+        agent: step.agent,
+        status: "completed",
+        output: `${step.title} completed`
+      });
     }
 
+    status = transition(status, "verifying");
+    task.status = status;
     const passed = execution.length === plan.length;
     status = passed ? transition(status, "completed") : transition(status, "failed");
     task.status = status;
@@ -65,7 +76,10 @@ export class KhanOrchestrator {
       task,
       plan,
       execution,
-      verification: { passed, checks: ["plan-created", "agents-executed", "verification-completed"] }
+      verification: {
+        passed,
+        checks: ["plan-created", "agents-executed", "verification-completed"]
+      }
     };
   }
 }
