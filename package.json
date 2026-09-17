@@ -9,6 +9,7 @@
     "demo": "node --import tsx apps/cli/src/index.ts"
   },
   "devDependencies": {
+    "@types/node": "^24.5.2",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2"
   }
