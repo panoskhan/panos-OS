@@ -1,14 +1,14 @@
-import { canTransition, transition } from "../../../services/orchestrator/src/state-machine";
+import assert from "node:assert/strict";
+import test from "node:test";
+import { canTransition, transition } from "../../services/orchestrator/src/state-machine";
 
-describe("task state machine", () => {
-  it("allows normal execution flow", () => {
-    expect(canTransition("received", "understanding")).toBe(true);
-    expect(canTransition("planning", "executing")).toBe(true);
-    expect(transition("verifying", "completed")).toBe("completed");
-  });
+test("task state machine allows normal execution flow", () => {
+  assert.equal(canTransition("received", "understanding"), true);
+  assert.equal(canTransition("planning", "executing"), true);
+  assert.equal(transition("verifying", "completed"), "completed");
+});
 
-  it("rejects invalid transitions", () => {
-    expect(canTransition("completed", "executing")).toBe(false);
-    expect(() => transition("completed", "executing")).toThrow();
-  });
+test("task state machine rejects invalid transitions", () => {
+  assert.equal(canTransition("completed", "executing"), false);
+  assert.throws(() => transition("completed", "executing"));
 });
