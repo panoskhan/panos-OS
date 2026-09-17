@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  architecture-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify required architecture paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f README.md
+          test -f docs/ARCHITECTURE.md
+          test -f packages/contracts/src/task.ts
+          test -f packages/contracts/src/agent.ts
+          test -f services/orchestrator/src/state-machine.ts
+          test -f services/model-router/src/router.ts
+          test -f services/permissions/src/policy.ts
+          test -f agents/planner/src/index.ts
+          test -f agents/coding/src/index.ts
+          test -f agents/qa/src/index.ts
+          test -f agents/files/src/index.ts
+          echo "KHAN OS architecture baseline verified"
