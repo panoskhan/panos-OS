@@ -9,12 +9,16 @@ test("vertical slice: request -> plan -> agents -> QA -> report", () => {
   );
 
   assert.equal(report.task.status, "completed");
-  assert.equal(report.plan.length, 2);
+  assert.equal(report.plan.length, 3);
   assert.deepEqual(
     report.plan.map((step) => step.agent),
-    ["coding", "qa"]
+    ["coding", "coding", "qa"]
   );
-  assert.equal(report.execution.length, 2);
+  assert.deepEqual(
+    report.plan.map((step) => step.dependsOn),
+    [[], ["inspect"], ["analyze"]]
+  );
+  assert.equal(report.execution.length, 3);
   assert.equal(report.verification.passed, true);
   assert.ok(report.verification.findings.length >= 1);
 });
