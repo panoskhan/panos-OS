@@ -1,22 +1,23 @@
+import type { AgentResult } from "../../../packages/contracts/src/agent";
 import type { Task, TaskStatus } from "../../../packages/contracts/src/task";
 import { transition } from "./state-machine";
-import { plannerAgent } from "../../../agents/planner/src/index";
-import { codingAgent } from "../../../agents/coding/src/index";
-import { qaAgent } from "../../../agents/qa/src/index";
+import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner/src/index";
+import { codingAgent, executeAnalysis } from "../../../agents/coding/src/index";
+import { qaAgent, verifyAnalysis, type VerificationResult } from "../../../agents/qa/src/index";
 import { PermissionEngine } from "../../permissions/src/index";
 
-export interface PlanStep {
-  id: string;
-  title: string;
-  agent: "coding" | "qa";
-  permissions: string[];
+export interface ExecutionEntry {
+  stepId: string;
+  agent: string;
+  status: "completed" | "failed";
+  output: AgentResult;
 }
 
 export interface ExecutionReport {
   task: Task;
   plan: PlanStep[];
-  execution: Array<{ stepId: string; agent: string; status: "completed" | "failed"; output: string }>;
-  verification: { passed: boolean; checks: string[] };
+  execution: ExecutionEntry[];
+  verification: VerificationResult;
 }
 
 export class KhanOrchestrator {
@@ -27,59 +28,54 @@ export class KhanOrchestrator {
     const task: Task = {
       id: `task_${Date.now()}`,
       projectId: "default",
-      goal,
+      goal: goal.trim(),
       status,
       risk: "read",
       requiredAgents: [plannerAgent.id, codingAgent.id, qaAgent.id],
       createdAt: new Date().toISOString()
     };
+    if (!task.goal) throw new Error("Goal is required");
 
     status = transition(status, "understanding");
     status = transition(status, "planning");
     task.status = status;
+    const plan = createPlan(task.goal);
+    const execution: ExecutionEntry[] = [];
+    const agentResults: AgentResult[] = [];
 
-    const plan: PlanStep[] = [
-      { id: "plan", title: `Decompose and prepare: ${goal}`, agent: "coding", permissions: ["workspace.read"] },
-      { id: "qa", title: "Verify execution result", agent: "qa", permissions: ["workspace.read"] }
-    ];
-
-    const execution: ExecutionReport["execution"] = [];
     status = transition(status, "executing");
     task.status = status;
-
     for (const step of plan) {
       if (!this.permissions.allowed(step.permissions)) {
         status = transition(status, "waiting_approval");
         task.status = status;
-        return {
-          task,
-          plan,
-          execution,
-          verification: { passed: false, checks: ["approval-required"] }
-        };
+        return { task, plan, execution, verification: { passed: false, checks: ["approval-required"], findings: step.permissions } };
       }
-      execution.push({
-        stepId: step.id,
-        agent: step.agent,
-        status: "completed",
-        output: `${step.title} completed`
-      });
+
+      let result: AgentResult;
+      if (step.agent === codingAgent.id) {
+        result = executeAnalysis(step, task.goal);
+        agentResults.push(result);
+      } else if (step.agent === qaAgent.id) {
+        const verification = verifyAnalysis(agentResults);
+        result = { status: verification.passed ? "success" : "failure", summary: verification.passed ? "QA passed" : "QA failed", findings: verification.findings };
+      } else {
+        result = { status: "failure", summary: `Unknown agent: ${step.agent}` };
+      }
+
+      execution.push({ stepId: step.id, agent: step.agent, status: result.status === "success" ? "completed" : "failed", output: result });
+      if (result.status === "failure") {
+        status = transition(status, "failed");
+        task.status = status;
+        return { task, plan, execution, verification: { passed: false, checks: ["agent-execution"], findings: result.findings ?? [result.summary] } };
+      }
     }
 
     status = transition(status, "verifying");
     task.status = status;
-    const passed = execution.length === plan.length;
-    status = passed ? transition(status, "completed") : transition(status, "failed");
+    const verification = verifyAnalysis(agentResults);
+    status = verification.passed ? transition(status, "completed") : transition(status, "failed");
     task.status = status;
-
-    return {
-      task,
-      plan,
-      execution,
-      verification: {
-        passed,
-        checks: ["plan-created", "agents-executed", "verification-completed"]
-      }
-    };
+    return { task, plan, execution, verification };
   }
 }
