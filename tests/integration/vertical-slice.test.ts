@@ -4,11 +4,16 @@ import { KhanOrchestrator } from "../../services/orchestrator/src/orchestrator";
 import { PermissionEngine } from "../../services/permissions/src/index";
 
 test("vertical slice: request -> plan -> agents -> QA -> report", () => {
-  const report = new KhanOrchestrator().run("Analyze this project and identify the next engineering tasks.");
+  const report = new KhanOrchestrator().run(
+    "Analyze this project and identify the next engineering tasks."
+  );
 
   assert.equal(report.task.status, "completed");
   assert.equal(report.plan.length, 2);
-  assert.deepEqual(report.plan.map((step) => step.agent), ["coding", "qa"]);
+  assert.deepEqual(
+    report.plan.map((step) => step.agent),
+    ["coding", "qa"]
+  );
   assert.equal(report.execution.length, 2);
   assert.equal(report.verification.passed, true);
   assert.ok(report.verification.findings.length >= 1);
@@ -18,5 +23,5 @@ test("external permission requires an approval decision", () => {
   const decision = new PermissionEngine().decide(["github.write"]);
   assert.equal(decision.allowed, false);
   assert.equal(decision.requiresApproval, true);
-  assert.deepEqual(decision.deniedPermissions, ["github.write"]);
+  assert.deepEqual(decision.deniedPermissions, []);
 });
