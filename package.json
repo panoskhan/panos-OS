@@ -5,7 +5,7 @@
   "description": "KHAN OS modular personal AI orchestration platform",
   "scripts": {
     "build": "tsc --noEmit",
-    "test": "node --import tsx --test "tests/**/*.test.ts"",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
     "demo": "node --import tsx apps/cli/src/index.ts"
   },
   "devDependencies": {
