@@ -49,6 +49,10 @@ export function validatePlan(plan: PlanStep[]): PlanValidationResult {
     visiting.add(id);
     const nextPath = [...path, id];
     for (const dependency of dependencies.get(id) ?? []) {
+      // Self-dependencies are reported by the direct dependency check above.
+      // Do not feed them into cycle detection, otherwise the same invalid edge
+      // produces a second, redundant diagnostic ("id -> id").
+      if (dependency === id) continue;
       visit(dependency, nextPath);
     }
     visiting.delete(id);
