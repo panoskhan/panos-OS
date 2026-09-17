@@ -2,6 +2,7 @@ import type { AgentResult } from "../../../packages/contracts/src/agent";
 import type { Task, TaskStatus } from "../../../packages/contracts/src/task";
 import { transition } from "./state-machine";
 import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner/src/index";
+import { validatePlan } from "../../../agents/planner/src/validator";
 import { codingAgent, executeAnalysis } from "../../../agents/coding/src/index";
 import { qaAgent, verifyAnalysis, type VerificationResult } from "../../../agents/qa/src/index";
 import { PermissionEngine } from "../../permissions/src/index";
@@ -40,6 +41,23 @@ export class KhanOrchestrator {
     status = transition(status, "planning");
     task.status = status;
     const plan = createPlan(task.goal);
+    const validation = validatePlan(plan);
+
+    if (!validation.valid) {
+      status = transition(status, "failed");
+      task.status = status;
+      return {
+        task,
+        plan,
+        execution: [],
+        verification: {
+          passed: false,
+          checks: ["dependency-validation"],
+          findings: validation.errors
+        }
+      };
+    }
+
     const execution: ExecutionEntry[] = [];
     const agentResults: AgentResult[] = [];
 
