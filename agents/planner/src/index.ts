@@ -20,12 +20,12 @@ export const plannerAgent: AgentDefinition = {
 function classifyGoal(goal: string): GoalKind {
   const normalized = goal.toLowerCase();
 
-  if (/\b(test|tests|testing|qa|verify|verification)\b/.test(normalized)) {
-    return "testing";
-  }
-
   if (/\b(fix|bug|error|repair|implement|implementation|build|create|add|change|modify|refactor|update)\b/.test(normalized)) {
     return "implementation";
+  }
+
+  if (/\b(test|tests|testing|qa|verify|verification)\b/.test(normalized)) {
+    return "testing";
   }
 
   return "analysis";
