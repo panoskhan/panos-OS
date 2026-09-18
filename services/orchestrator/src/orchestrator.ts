@@ -4,7 +4,7 @@ import { transition } from "./state-machine";
 import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner/src/index";
 import { validatePlan } from "../../../agents/planner/src/validator";
 import { codingAgent } from "../../../agents/coding/src/index";
-import { qaAgent, verifyAnalysis, type VerificationResult } from "../../../agents/qa/src/index";
+import { qaAgent, verifyIndependentQa, type VerificationResult } from "../../../agents/qa/src/index";
 import { AgentRuntime, type RuntimeExecution as RuntimeExecutionEntry } from "../../agents/src/runtime";
 
 export interface ExecutionEntry {
@@ -37,7 +37,7 @@ export class KhanOrchestrator {
 
     this.runtime.register(qaAgent.id, (_step, context) => {
       const results = (context.inputs.agentResults as AgentResult[] | undefined) ?? [];
-      const verification = verifyAnalysis(results);
+      const verification = verifyIndependentQa(results, context.goal);
       return {
         status: verification.passed ? "success" : "failure",
         summary: verification.passed ? "QA passed" : "QA failed",
@@ -154,7 +154,7 @@ export class KhanOrchestrator {
 
     status = transition(status, "verifying");
     task.status = status;
-    const verification = verifyAnalysis(agentResults);
+    const verification = verifyIndependentQa(agentResults, task.goal);
     status = verification.passed ? transition(status, "completed") : transition(status, "failed");
     task.status = status;
     return { task, plan, execution, verification };
