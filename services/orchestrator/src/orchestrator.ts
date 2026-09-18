@@ -21,10 +21,16 @@ export interface ExecutionReport {
   verification: VerificationResult;
 }
 
-export class KhanOrchestrator {
-  private readonly runtime = new AgentRuntime();
+type PlanFactory = (goal: string) => PlanStep[];
 
-  constructor() {
+export class KhanOrchestrator {
+  private readonly runtime: AgentRuntime;
+  private readonly planFactory: PlanFactory;
+
+  constructor(runtime = new AgentRuntime(), planFactory: PlanFactory = createPlan) {
+    this.runtime = runtime;
+    this.planFactory = planFactory;
+
     this.runtime.register(codingAgent.id, (step, context) => {
       return {
         status: "success",
@@ -62,7 +68,7 @@ export class KhanOrchestrator {
     status = transition(status, "understanding");
     status = transition(status, "planning");
     task.status = status;
-    const plan = createPlan(task.goal);
+    const plan = this.planFactory(task.goal);
     const validation = validatePlan(plan);
 
     if (!validation.valid) {
