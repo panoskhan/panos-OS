@@ -31,16 +31,21 @@ function classifyGoal(goal: string): GoalKind {
   return "analysis";
 }
 
+function requiresGithubWrite(goal: string): boolean {
+  return /\b(github|push|publish|release)\b/.test(goal.toLowerCase());
+}
+
 function step(
   id: string,
   title: string,
-  dependsOn: string[] = []
+  dependsOn: string[] = [],
+  permissions: string[] = ["workspace.read"]
 ): PlanStep {
   return {
     id,
     title,
     agent: "coding",
-    permissions: ["workspace.read"],
+    permissions,
     dependsOn
   };
 }
@@ -66,9 +71,13 @@ export function createPlan(goal: string): PlanStep[] {
   }
 
   if (kind === "implementation") {
+    const implementationPermissions = requiresGithubWrite(normalized)
+      ? ["workspace.read", "workspace.write", "github.write"]
+      : ["workspace.read", "workspace.write"];
+
     return [
       step("inspect", `Inspect the repository and identify implementation requirements for: ${normalized}`),
-      step("implement", `Implement the required changes for: ${normalized}`, ["inspect"]),
+      step("implement", `Implement the required changes for: ${normalized}`, ["inspect"], implementationPermissions),
       step("test", `Test the implementation for: ${normalized}`, ["implement"]),
       {
         id: "qa",
