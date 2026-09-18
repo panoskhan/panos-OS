@@ -23,6 +23,16 @@ export interface ExecutionReport {
 
 type PlanFactory = (goal: string) => PlanStep[];
 
+function classifyRisk(plan: PlanStep[]): Task["risk"] {
+  if (plan.some((step) => step.permissions.includes("github.write") || step.permissions.includes("publish.external"))) {
+    return "external";
+  }
+  if (plan.some((step) => step.permissions.includes("workspace.write"))) {
+    return "low";
+  }
+  return "read";
+}
+
 export class KhanOrchestrator {
   private readonly runtime: AgentRuntime;
   private readonly planFactory: PlanFactory;
@@ -69,6 +79,7 @@ export class KhanOrchestrator {
     status = transition(status, "planning");
     task.status = status;
     const plan = this.planFactory(task.goal);
+    task.risk = classifyRisk(plan);
     const validation = validatePlan(plan);
 
     if (!validation.valid) {
