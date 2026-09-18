@@ -18,6 +18,15 @@ test("planner changes the graph for implementation goals", () => {
     plan.map((step) => step.dependsOn),
     [[], ["inspect"], ["implement"], ["test"]]
   );
+  assert.deepEqual(plan[1].permissions, ["workspace.read", "workspace.write"]);
+});
+
+test("planner creates an approval-gated permission for GitHub implementation goals", () => {
+  const plan = createPlan("Implement the fix and push the changes to GitHub.");
+
+  assert.deepEqual(plan.map((step) => step.id), ["inspect", "implement", "test", "qa"]);
+  assert.deepEqual(plan[1].permissions, ["workspace.read", "workspace.write", "github.write"]);
+  assert.deepEqual(plan[2].dependsOn, ["implement"]);
 });
 
 test("planner creates a testing graph for QA requests", () => {
