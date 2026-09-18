@@ -5,7 +5,7 @@ const transitions: Record<TaskStatus, TaskStatus[]> = {
   understanding: ["planning", "failed"],
   planning: ["waiting_approval", "executing", "failed"],
   waiting_approval: ["executing", "failed"],
-  executing: ["verifying", "failed"],
+  executing: ["verifying", "waiting_approval", "failed"],
   verifying: ["completed", "failed"],
   completed: [],
   failed: ["planning"]
