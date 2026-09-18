@@ -83,6 +83,7 @@ export class KhanOrchestrator {
     const execution: ExecutionEntry[] = [];
     const agentResults: AgentResult[] = [];
     const completed = new Set<string>();
+    let independentQaVerification: VerificationResult | undefined;
 
     status = transition(status, "executing");
     task.status = status;
@@ -148,13 +149,19 @@ export class KhanOrchestrator {
         };
       }
 
+      if (step.agent === qaAgent.id) {
+        // The QA agent independently verifies the results that existed before QA ran.
+        // Do not include the QA result itself in the verification input.
+        independentQaVerification = verifyIndependentQa(agentResults, task.goal);
+      }
+
       completed.add(step.id);
       if (runtimeResult.output) agentResults.push(runtimeResult.output);
     }
 
     status = transition(status, "verifying");
     task.status = status;
-    const verification = verifyIndependentQa(agentResults, task.goal);
+    const verification = independentQaVerification ?? verifyIndependentQa(agentResults, task.goal);
     status = verification.passed ? transition(status, "completed") : transition(status, "failed");
     task.status = status;
     return { task, plan, execution, verification };
