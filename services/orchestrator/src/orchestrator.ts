@@ -1,17 +1,17 @@
-import type { AgentResult } from "../../../packages/contracts/src/agent";
+import type { AgentResult, AgentContext } from "../../../packages/contracts/src/agent";
 import type { Task, TaskStatus } from "../../../packages/contracts/src/task";
 import { transition } from "./state-machine";
 import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner/src/index";
 import { validatePlan } from "../../../agents/planner/src/validator";
-import { codingAgent, executeAnalysis } from "../../../agents/coding/src/index";
+import { codingAgent } from "../../../agents/coding/src/index";
 import { qaAgent, verifyAnalysis, type VerificationResult } from "../../../agents/qa/src/index";
-import { PermissionEngine } from "../../permissions/src/index";
+import { AgentRuntime, type ExecutionEntry as RuntimeExecutionEntry } from "../../agents/src/runtime";
 
 export interface ExecutionEntry {
   stepId: string;
   agent: string;
-  status: "completed" | "failed";
-  output: AgentResult;
+  status: "completed" | "failed" | "waiting_approval";
+  output?: AgentResult;
 }
 
 export interface ExecutionReport {
@@ -22,7 +22,29 @@ export interface ExecutionReport {
 }
 
 export class KhanOrchestrator {
-  private permissions = new PermissionEngine();
+  private readonly runtime = new AgentRuntime();
+
+  constructor() {
+    this.runtime.register(codingAgent.id, (step, context) => {
+      return {
+        status: "success",
+        summary: `Executed coding agent step '${step.id}' for goal: ${context.goal}`,
+        findings: [
+          `Coding agent executed task: ${step.title}`
+        ]
+      };
+    });
+
+    this.runtime.register(qaAgent.id, (_step, context) => {
+      const results = (context.inputs.agentResults as AgentResult[] | undefined) ?? [];
+      const verification = verifyAnalysis(results);
+      return {
+        status: verification.passed ? "success" : "failure",
+        summary: verification.passed ? "QA passed" : "QA failed",
+        findings: verification.findings
+      };
+    });
+  }
 
   run(goal: string): ExecutionReport {
     let status: TaskStatus = "received";
@@ -60,33 +82,74 @@ export class KhanOrchestrator {
 
     const execution: ExecutionEntry[] = [];
     const agentResults: AgentResult[] = [];
+    const completed = new Set<string>();
 
     status = transition(status, "executing");
     task.status = status;
+
     for (const step of plan) {
-      if (!this.permissions.allowed(step.permissions)) {
-        status = transition(status, "waiting_approval");
-        task.status = status;
-        return { task, plan, execution, verification: { passed: false, checks: ["approval-required"], findings: step.permissions } };
-      }
-
-      let result: AgentResult;
-      if (step.agent === codingAgent.id) {
-        result = executeAnalysis(step, task.goal);
-        agentResults.push(result);
-      } else if (step.agent === qaAgent.id) {
-        const verification = verifyAnalysis(agentResults);
-        result = { status: verification.passed ? "success" : "failure", summary: verification.passed ? "QA passed" : "QA failed", findings: verification.findings };
-      } else {
-        result = { status: "failure", summary: `Unknown agent: ${step.agent}` };
-      }
-
-      execution.push({ stepId: step.id, agent: step.agent, status: result.status === "success" ? "completed" : "failed", output: result });
-      if (result.status === "failure") {
+      const dependenciesReady = step.dependsOn.every((dependency) => completed.has(dependency));
+      if (!dependenciesReady) {
         status = transition(status, "failed");
         task.status = status;
-        return { task, plan, execution, verification: { passed: false, checks: ["agent-execution"], findings: result.findings ?? [result.summary] } };
+        return {
+          task,
+          plan,
+          execution,
+          verification: {
+            passed: false,
+            checks: ["dependency-order"],
+            findings: [`Dependencies not completed for task: ${step.id}`]
+          }
+        };
       }
+
+      const context: AgentContext = {
+        taskId: task.id,
+        projectId: task.projectId,
+        goal: task.goal,
+        inputs: { agentResults: [...agentResults] }
+      };
+      const runtimeResult: RuntimeExecutionEntry = this.runtime.executeStep(step, context);
+      execution.push({
+        stepId: runtimeResult.stepId,
+        agent: runtimeResult.agent,
+        status: runtimeResult.status,
+        output: runtimeResult.output
+      });
+
+      if (runtimeResult.status === "waiting_approval") {
+        status = transition(status, "waiting_approval");
+        task.status = status;
+        return {
+          task,
+          plan,
+          execution,
+          verification: {
+            passed: false,
+            checks: ["approval-required"],
+            findings: step.permissions
+          }
+        };
+      }
+
+      if (runtimeResult.status === "failed") {
+        status = transition(status, "failed");
+        task.status = status;
+        return {
+          task,
+          plan,
+          execution,
+          verification: {
+            passed: false,
+            checks: ["agent-execution"],
+            findings: runtimeResult.output?.findings ?? [runtimeResult.output?.summary ?? "Agent execution failed"]
+          }
+        };
+      }
+
+      completed.add(step.id);
+      if (runtimeResult.output) agentResults.push(runtimeResult.output);
     }
 
     status = transition(status, "verifying");
