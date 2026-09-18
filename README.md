@@ -45,3 +45,9 @@ Initial integrations:
 Build → QA → Publish → Verify → Fix → Next
 
 Consequential external actions should pass through explicit permission/approval gates.
+
+## GitHub Actions
+
+The repository currently checks in its CI workflow at `.github/workflows/ci.yml`.
+
+GitHub-managed automation entries that may appear under the Actions UI are not necessarily workflow source files committed to this repository.
