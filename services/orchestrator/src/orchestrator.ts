@@ -5,7 +5,7 @@ import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner
 import { validatePlan } from "../../../agents/planner/src/validator";
 import { codingAgent } from "../../../agents/coding/src/index";
 import { qaAgent, verifyAnalysis, type VerificationResult } from "../../../agents/qa/src/index";
-import { AgentRuntime, type ExecutionEntry as RuntimeExecutionEntry } from "../../agents/src/runtime";
+import { AgentRuntime, type RuntimeExecution as RuntimeExecutionEntry } from "../../agents/src/runtime";
 
 export interface ExecutionEntry {
   stepId: string;
