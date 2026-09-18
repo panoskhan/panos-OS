@@ -20,7 +20,17 @@ test("vertical slice: request -> plan -> agents -> QA -> report", () => {
   );
   assert.equal(report.execution.length, 3);
   assert.equal(report.verification.passed, true);
-  assert.ok(report.verification.findings.length >= 1);
+  assert.deepEqual(report.verification.checks, [
+    "agent-results-present",
+    "agent-results-successful",
+    "findings-present",
+    "goal-referenced"
+  ]);
+  assert.ok(
+    report.verification.findings.includes(
+      "QA independently reviewed the execution results."
+    )
+  );
 });
 
 test("external permission requires an approval decision", () => {
