@@ -19,6 +19,7 @@ test("web dashboard serves health and executes a task", async () => {
     const html = await page.text();
     assert.match(html, /KHAN OS/);
     assert.match(html, /Run KHAN/);
+    assert.match(html, /Approval required/);
 
     const task = await fetch(`${base}/api/tasks`, {
       method: "POST",
@@ -26,9 +27,30 @@ test("web dashboard serves health and executes a task", async () => {
       body: JSON.stringify({ goal: "Analyze this project and identify the next engineering tasks." })
     });
     assert.equal(task.status, 200);
-    const report = await task.json() as { task: { status: string }; verification: { passed: boolean } };
+    const report = await task.json() as { task: { status: string; risk: string }; verification: { passed: boolean } };
     assert.equal(report.task.status, "completed");
+    assert.equal(report.task.risk, "read");
     assert.equal(report.verification.passed, true);
+
+    const approvalTask = await fetch(`${base}/api/tasks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goal: "Implement the fix and push the changes to GitHub." })
+    });
+    assert.equal(approvalTask.status, 200);
+    const approvalReport = await approvalTask.json() as {
+      task: { status: string; risk: string };
+      execution: Array<{ stepId: string; status: string }>;
+      verification: { checks: string[]; findings: string[] };
+    };
+    assert.equal(approvalReport.task.status, "waiting_approval");
+    assert.equal(approvalReport.task.risk, "external");
+    assert.deepEqual(approvalReport.execution.map((entry) => [entry.stepId, entry.status]), [
+      ["inspect", "completed"],
+      ["implement", "waiting_approval"]
+    ]);
+    assert.deepEqual(approvalReport.verification.checks, ["approval-required"]);
+    assert.deepEqual(approvalReport.verification.findings, ["workspace.read", "workspace.write", "github.write"]);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
