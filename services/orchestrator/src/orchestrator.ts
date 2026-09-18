@@ -5,7 +5,7 @@ import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner
 import { validatePlan } from "../../../agents/planner/src/validator";
 import { codingAgent } from "../../../agents/coding/src/index";
 import { qaAgent, verifyIndependentQa, type VerificationResult } from "../../../agents/qa/src/index";
-import { AgentRuntime, type RuntimeExecution as RuntimeExecutionEntry } from "../../agents/src/runtime";
+import { AgentRuntime, type AgentHandler, type RuntimeExecution as RuntimeExecutionEntry } from "../../agents/src/runtime";
 
 export interface ExecutionEntry {
   stepId: string;
@@ -33,23 +33,27 @@ function classifyRisk(plan: PlanStep[]): Task["risk"] {
   return "read";
 }
 
+const defaultCodingHandler: AgentHandler = (step, context) => ({
+  status: "success",
+  summary: `Executed coding agent step '${step.id}' for goal: ${context.goal}`,
+  findings: [
+    `Coding agent executed task: ${step.title}`
+  ]
+});
+
 export class KhanOrchestrator {
   private readonly runtime: AgentRuntime;
   private readonly planFactory: PlanFactory;
 
-  constructor(runtime = new AgentRuntime(), planFactory: PlanFactory = createPlan) {
+  constructor(
+    runtime = new AgentRuntime(),
+    planFactory: PlanFactory = createPlan,
+    codingHandler: AgentHandler = defaultCodingHandler
+  ) {
     this.runtime = runtime;
     this.planFactory = planFactory;
 
-    this.runtime.register(codingAgent.id, (step, context) => {
-      return {
-        status: "success",
-        summary: `Executed coding agent step '${step.id}' for goal: ${context.goal}`,
-        findings: [
-          `Coding agent executed task: ${step.title}`
-        ]
-      };
-    });
+    this.runtime.register(codingAgent.id, codingHandler);
 
     this.runtime.register(qaAgent.id, (_step, context) => {
       const results = (context.inputs.agentResults as AgentResult[] | undefined) ?? [];
