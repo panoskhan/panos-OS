@@ -158,15 +158,23 @@ export class KhanOrchestrator {
       if (runtimeResult.status === "failed") {
         status = transition(status, "failed");
         task.status = status;
+
+        // A failed QA result is itself a valid negative verification outcome.
+        // Preserve the independent QA contract instead of collapsing it into
+        // the generic agent-execution failure shape.
+        const verification = step.agent === qaAgent.id
+          ? verifyIndependentQa(agentResults, task.goal)
+          : {
+              passed: false,
+              checks: ["agent-execution"],
+              findings: runtimeResult.output?.findings ?? [runtimeResult.output?.summary ?? "Agent execution failed"]
+            };
+
         return {
           task,
           plan,
           execution,
-          verification: {
-            passed: false,
-            checks: ["agent-execution"],
-            findings: runtimeResult.output?.findings ?? [runtimeResult.output?.summary ?? "Agent execution failed"]
-          }
+          verification
         };
       }
 
