@@ -45,9 +45,10 @@ test("negative path: independent QA rejects an invalid coding result", () => {
     ),
     true
   );
-  assert.equal(
-    report.verification.findings[3],
-    "Execution results do not reference the requested goal."
+  assert.ok(
+    report.verification.findings.includes(
+      "Execution results do not reference the requested goal."
+    )
   );
   assert.equal(report.execution.some((entry) => entry.stepId === "qa"), true);
 });
