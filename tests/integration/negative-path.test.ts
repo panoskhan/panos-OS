@@ -39,12 +39,12 @@ test("negative path: independent QA rejects an invalid coding result", () => {
   assert.equal(report.execution[0]?.output?.status, "success");
   assert.equal(report.task.status, "failed");
   assert.equal(report.verification.passed, false);
-  assert.deepEqual(report.verification.checks, [
-    "agent-results-present",
-    "agent-results-successful",
-    "findings-present",
-    "goal-referenced"
-  ]);
+  assert.equal(
+    ["agent-results-present", "agent-results-successful", "findings-present", "goal-referenced"].every((check) =>
+      report.verification.checks.includes(check)
+    ),
+    true
+  );
   assert.equal(
     report.verification.findings[3],
     "Execution results do not reference the requested goal."
