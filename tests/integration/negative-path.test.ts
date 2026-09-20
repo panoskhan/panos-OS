@@ -39,10 +39,16 @@ test("negative path: independent QA rejects an invalid coding result", () => {
   assert.equal(report.execution[0]?.output?.status, "success");
   assert.equal(report.task.status, "failed");
   assert.equal(report.verification.passed, false);
-  assert.ok(report.verification.checks.includes("goal-referenced"));
-  assert.match(
-    report.verification.findings[3] ?? "",
-    /does not reference the requested goal/i
+  assert.equal(
+    ["agent-results-present", "agent-results-successful", "findings-present", "goal-referenced"].every((check) =>
+      report.verification.checks.includes(check)
+    ),
+    true
+  );
+  assert.ok(
+    report.verification.findings.includes(
+      "Execution results do not reference the requested goal."
+    )
   );
   assert.equal(report.execution.some((entry) => entry.stepId === "qa"), true);
 });
