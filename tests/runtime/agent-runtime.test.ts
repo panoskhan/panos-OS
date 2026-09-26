@@ -44,6 +44,34 @@ test("agent runtime stops when permission requires approval", () => {
   assert.equal(result.output, undefined);
 });
 
+test("agent runtime executes an approval-gated step once its permission is approved", () => {
+  const runtime = new AgentRuntime();
+  runtime.register("coding", () => ({ status: "success", summary: "executed after approval" }));
+
+  const result = runtime.executeStep(
+    step({ permissions: ["workspace.read", "github.write"] }),
+    context,
+    { approvedPermissions: ["github.write"] }
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.output?.summary, "executed after approval");
+});
+
+test("agent runtime approval does not grant unknown permissions", () => {
+  const runtime = new AgentRuntime();
+  runtime.register("coding", () => ({ status: "success", summary: "should not execute" }));
+
+  const result = runtime.executeStep(
+    step({ permissions: ["unknown.permission"] }),
+    context,
+    { approvedPermissions: ["unknown.permission"] }
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.output, undefined);
+});
+
 test("agent runtime rejects denied permissions", () => {
   const runtime = new AgentRuntime();
   runtime.register("coding", () => ({ status: "success", summary: "should not execute" }));
