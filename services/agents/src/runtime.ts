@@ -12,6 +12,10 @@ export interface RuntimeExecution {
   permission: PermissionDecision;
 }
 
+export interface ExecuteStepOptions {
+  approvedPermissions?: Iterable<string>;
+}
+
 export class AgentRuntime {
   private readonly handlers = new Map<string, AgentHandler>();
 
@@ -23,8 +27,8 @@ export class AgentRuntime {
     this.handlers.set(agentId, handler);
   }
 
-  executeStep(step: PlanStep, context: AgentContext): RuntimeExecution {
-    const permission = this.permissions.decide(step.permissions);
+  executeStep(step: PlanStep, context: AgentContext, options: ExecuteStepOptions = {}): RuntimeExecution {
+    const permission = this.permissions.decide(step.permissions, options.approvedPermissions);
     if (permission.requiresApproval) {
       return { stepId: step.id, agent: step.agent, status: "waiting_approval", permission };
     }

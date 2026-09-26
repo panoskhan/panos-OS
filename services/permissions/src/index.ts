@@ -20,14 +20,20 @@ export class PermissionEngine {
     "github.write"
   ]);
 
-  decide(required: string[]): PermissionDecision {
+  /**
+   * `approved` lists permissions that already received an explicit approval
+   * decision. Approval never grants a permission the engine does not allow.
+   */
+  decide(required: string[], approved: Iterable<string> = []): PermissionDecision {
+    const approvedPermissions = new Set(approved);
     const deniedPermissions = required.filter(
       (permission) => !this.allowedPermissions.has(permission)
     );
     const approvalRequired = required.some(
       (permission) =>
         this.allowedPermissions.has(permission) &&
-        requiresApproval(permission)
+        requiresApproval(permission) &&
+        !approvedPermissions.has(permission)
     );
 
     return {

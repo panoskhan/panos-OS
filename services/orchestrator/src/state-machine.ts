@@ -1,14 +1,15 @@
 import type { TaskStatus } from "../../../packages/contracts/src/task";
 
 const transitions: Record<TaskStatus, TaskStatus[]> = {
-  received: ["understanding"],
-  understanding: ["planning", "failed"],
-  planning: ["waiting_approval", "executing", "failed"],
-  waiting_approval: ["executing", "failed"],
-  executing: ["verifying", "waiting_approval", "failed"],
+  received: ["understanding", "cancelled"],
+  understanding: ["planning", "failed", "cancelled"],
+  planning: ["waiting_approval", "executing", "failed", "cancelled"],
+  waiting_approval: ["executing", "failed", "cancelled"],
+  executing: ["verifying", "waiting_approval", "failed", "cancelled"],
   verifying: ["completed", "failed"],
   completed: [],
-  failed: ["planning"]
+  failed: ["planning"],
+  cancelled: []
 };
 
 export function canTransition(from: TaskStatus, to: TaskStatus): boolean {

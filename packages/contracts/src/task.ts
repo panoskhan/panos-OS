@@ -6,7 +6,8 @@ export type TaskStatus =
   | "executing"
   | "verifying"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 export type RiskLevel = "read" | "low" | "external" | "high";
 
