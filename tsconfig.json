@@ -8,5 +8,6 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["apps/**/*.ts", "agents/**/*.ts", "packages/**/*.ts", "services/**/*.ts", "tests/**/*.ts"]
+  "include": ["apps/**/*.ts", "agents/**/*.ts", "packages/**/*.ts", "services/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "apps/web/src/**", "apps/web/vite.config.ts"]
 }

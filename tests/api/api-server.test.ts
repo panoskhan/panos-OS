@@ -139,6 +139,30 @@ test("api cancels a waiting task and refuses to cancel finished tasks", async ()
   });
 });
 
+test("api allows CORS only for configured browser origins", async () => {
+  await withApi(async (base) => {
+    const allowed = "http://127.0.0.1:5173";
+    const preflight = await fetch(`${base}/v1/tasks`, {
+      method: "OPTIONS",
+      headers: { origin: allowed, "access-control-request-method": "POST", "access-control-request-headers": "content-type" }
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), allowed);
+    assert.equal(preflight.headers.get("access-control-allow-methods"), "GET, POST");
+    assert.equal(preflight.headers.get("access-control-allow-headers"), "Content-Type");
+
+    const health = await fetch(`${base}/health`, { headers: { origin: allowed } });
+    assert.equal(health.headers.get("access-control-allow-origin"), allowed);
+
+    const missing = await fetch(`${base}/v1/tasks/missing`, { headers: { origin: allowed } });
+    assert.equal(missing.status, 404);
+    assert.equal(missing.headers.get("access-control-allow-origin"), allowed);
+
+    const foreign = await fetch(`${base}/health`, { headers: { origin: "https://evil.example" } });
+    assert.equal(foreign.headers.get("access-control-allow-origin"), null);
+  });
+});
+
 test("api rejects invalid requests", async () => {
   await withApi(async (base) => {
     const cases: Array<[Promise<Response>, number, string]> = [

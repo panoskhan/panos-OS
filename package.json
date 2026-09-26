@@ -4,15 +4,25 @@
   "private": true,
   "description": "KHAN OS modular personal AI orchestration platform",
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "tsc --noEmit && tsc --noEmit -p apps/web",
     "test": "node --import tsx --test \"tests/**/*.test.ts\"",
     "demo": "node --import tsx apps/cli/src/index.ts",
     "web": "node --import tsx apps/web/src/server.ts",
-    "api": "node --import tsx apps/api/src/index.ts"
+    "api": "node --import tsx apps/api/src/index.ts",
+    "web:dev": "vite apps/web",
+    "web:build": "vite build apps/web"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
     "tsx": "^4.20.3",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vite": "^8.3.1"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   }
 }

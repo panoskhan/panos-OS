@@ -15,6 +15,22 @@ import {
 const PORT = Number(process.env.API_PORT ?? 3001);
 const MAX_BODY_BYTES = 1024 * 1024;
 const TASK_ROUTE = /^\/v1\/tasks\/([^/]+)(?:\/(approve|reject|cancel|events))?$/;
+const DEFAULT_CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
+
+export interface KhanApiServerOptions {
+  /** Browser origins allowed to call the API. Defaults to API_CORS_ORIGINS or the Vite dev server. */
+  corsOrigins?: string[];
+}
+
+function corsOriginsFromEnv(): string[] {
+  const configured = process.env.API_CORS_ORIGINS?.split(",").map((origin) => origin.trim()).filter(Boolean);
+  return configured?.length ? configured : DEFAULT_CORS_ORIGINS;
+}
+
+function corsHeaders(origin: string | undefined, allowed: ReadonlySet<string>): Record<string, string> {
+  if (!origin || !allowed.has(origin)) return {};
+  return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+}
 
 class HttpError extends Error {
   constructor(
@@ -154,13 +170,27 @@ function toError(error: unknown): { status: number; body: ApiError; headers?: Re
   };
 }
 
-export function createKhanApiServer(orchestrator = new KhanOrchestrator()) {
+export function createKhanApiServer(
+  orchestrator = new KhanOrchestrator(),
+  { corsOrigins = corsOriginsFromEnv() }: KhanApiServerOptions = {}
+) {
+  const allowedOrigins = new Set(corsOrigins);
   return createServer((req: IncomingMessage, res: ServerResponse) => {
+    const cors = corsHeaders(req.headers.origin, allowedOrigins);
+    if (req.method === "OPTIONS") {
+      const preflight = Object.keys(cors).length
+        ? { ...cors, "Access-Control-Allow-Methods": "GET, POST", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "600" }
+        : {};
+      res.writeHead(204, preflight);
+      res.end();
+      return;
+    }
+
     route(orchestrator, req).then(
-      ([status, payload]) => send(res, status, payload),
+      ([status, payload]) => send(res, status, payload, cors),
       (error: unknown) => {
         const { status, body, headers } = toError(error);
-        send(res, status, body, headers);
+        send(res, status, body, { ...cors, ...headers });
       }
     );
   });
