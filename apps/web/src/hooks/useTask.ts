@@ -11,7 +11,7 @@ export function isTerminal(status: TaskStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-export type TaskAction = "create" | "approve" | "reject";
+export type TaskAction = "create" | "approve" | "reject" | "load";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -76,6 +76,9 @@ export function useTask(client: KhanApiClient = api) {
     [client, run]
   );
 
+  /** Opens an existing task (e.g. from recent tasks); polling resumes if it is still in progress. */
+  const load = useCallback((id: string) => run("load", () => client.getTask(id)), [client, run]);
+
   const approve = useCallback(async () => {
     if (taskId) await run("approve", () => client.approveTask(taskId));
   }, [client, run, taskId]);
@@ -87,5 +90,5 @@ export function useTask(client: KhanApiClient = api) {
     [client, run, taskId]
   );
 
-  return { report, error, pending, polling, createTask, approve, reject };
+  return { report, error, pending, polling, createTask, load, approve, reject };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TaskEvent } from "../../../../packages/contracts/src/api";
 import { api, type KhanApiClient } from "../lib/api";
 
@@ -34,9 +34,11 @@ function describe(event: TaskEvent): string {
   }
 }
 
+/** The "Live agent activity" log: the task's real event stream, newest at the bottom. */
 export function EventTimeline({ taskId, refreshKey, client = api }: EventTimelineProps) {
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const listRef = useRef<HTMLOListElement>(null);
 
   useEffect(() => {
     if (!taskId) {
@@ -59,20 +61,24 @@ export function EventTimeline({ taskId, refreshKey, client = api }: EventTimelin
     };
   }, [client, taskId, refreshKey]);
 
+  useEffect(() => {
+    const list = listRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [events]);
+
   return (
-    <section className="panel">
+    <section className="panel activity" aria-labelledby="activity-title">
       <header className="panel-head">
-        <h2>Event timeline</h2>
+        <h2 id="activity-title">Live agent activity</h2>
         <span className="muted">{events.length} events</span>
       </header>
       {error && <p className="error-text">{error}</p>}
       {!taskId ? (
-        <p className="empty">The task's event log appears here.</p>
+        <p className="empty">Every planner, agent and QA event appears here as it happens.</p>
       ) : (
-        <ol className="timeline">
+        <ol className="timeline" ref={listRef}>
           {events.map((event) => (
             <li key={event.seq} data-type={event.type}>
-              <span className="seq">{event.seq}</span>
               <time dateTime={event.at}>{new Date(event.at).toLocaleTimeString()}</time>
               <code className="event-type">{event.type}</code>
               <span className="event-data">{describe(event)}</span>
