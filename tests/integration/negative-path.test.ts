@@ -21,7 +21,7 @@ const analysisPlan = (_goal: string): PlanStep[] => [
   }
 ];
 
-test("negative path: independent QA rejects an invalid coding result", () => {
+test("negative path: independent QA rejects an invalid coding result", async () => {
   const goal = "Analyze the requested project.";
   const invalidResult: AgentResult = {
     status: "success",
@@ -29,7 +29,7 @@ test("negative path: independent QA rejects an invalid coding result", () => {
     findings: ["This finding deliberately does not reference the requested goal."]
   };
 
-  const report = new KhanOrchestrator(
+  const report = await new KhanOrchestrator(
     undefined,
     analysisPlan,
     () => invalidResult

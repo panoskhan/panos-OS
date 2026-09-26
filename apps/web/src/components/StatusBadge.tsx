@@ -7,6 +7,7 @@ const tones: Record<string, Tone> = {
   failed: "danger",
   cancelled: "idle",
   pending: "idle",
+  running: "active",
   received: "active",
   understanding: "active",
   planning: "active",

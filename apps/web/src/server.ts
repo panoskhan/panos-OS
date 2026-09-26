@@ -48,12 +48,12 @@ export function createKhanWebServer() {
     if (req.method === "POST" && req.url === "/api/tasks") {
       let body = "";
       req.on("data", chunk => { body += chunk; });
-      req.on("end", () => {
+      req.on("end", async () => {
         try {
           const parsed = JSON.parse(body || "{}");
           const requestGoal = String(parsed.goal ?? "").trim();
           if (!requestGoal) return json(res, 400, { error: "goal_required" });
-          return json(res, 200, orchestrator.run(requestGoal));
+          return json(res, 200, await orchestrator.run(requestGoal));
         } catch (error) {
           return json(res, 500, { error: "execution_failed", detail: error instanceof Error ? error.message : String(error) });
         }

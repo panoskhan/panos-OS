@@ -9,6 +9,7 @@
     "demo": "node --import tsx apps/cli/src/index.ts",
     "web": "node --import tsx apps/web/src/server.ts",
     "api": "node --import tsx apps/api/src/index.ts",
+    "api:demo": "node --env-file=apps/api/demo.env --import tsx apps/api/src/index.ts",
     "web:dev": "vite apps/web",
     "web:build": "vite build apps/web"
   },

@@ -16,6 +16,7 @@ function describe(event: TaskEvent): string {
       return `${data.from} → ${data.to}`;
     case "plan.created":
       return `${(data.steps as string[]).join(" → ")} · risk ${data.risk}`;
+    case "step.started":
     case "step.completed":
     case "step.failed":
     case "step.waiting_approval":

@@ -27,9 +27,9 @@ const approvalPlan = (_goal: string): PlanStep[] => [
   }
 ];
 
-test("vertical slice stops before an approval-gated agent executes", () => {
+test("vertical slice stops before an approval-gated agent executes", async () => {
   const goal = "Publish the requested change.";
-  const report = new KhanOrchestrator(undefined, approvalPlan).run(goal);
+  const report = await new KhanOrchestrator(undefined, approvalPlan).run(goal);
 
   assert.equal(report.task.status, "waiting_approval");
   assert.equal(report.task.risk, "external");
@@ -46,9 +46,9 @@ test("vertical slice stops before an approval-gated agent executes", () => {
   assert.deepEqual(report.verification.findings, ["github.write"]);
 });
 
-test("real planner marks GitHub implementation as external and stops before the write", () => {
+test("real planner marks GitHub implementation as external and stops before the write", async () => {
   const goal = "Implement the fix and push the changes to GitHub.";
-  const report = new KhanOrchestrator().run(goal);
+  const report = await new KhanOrchestrator().run(goal);
 
   assert.equal(report.task.status, "waiting_approval");
   assert.equal(report.task.risk, "external");
