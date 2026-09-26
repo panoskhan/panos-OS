@@ -24,14 +24,11 @@ function focusGoal() {
 
 function App() {
   const apiState = useApiHealth();
-  const { report, error, pending, polling, createTask, load, approve, reject } = useTask();
+  const { report, events, connection, error, pending, createTask, load, approve, reject } = useTask();
   const tasks = useTaskHistory(report);
 
   const avatar = avatarState(report, pending);
   const active = useMemo(() => activeAgents(report, pending), [report, pending]);
-  const refreshKey = report
-    ? `${report.task.status}:${report.execution.map((entry) => entry.status).join(",")}`
-    : "";
   const finished = report !== null && isTerminal(report.task.status);
 
   const coreLabel = apiState === "online" ? "CORE ONLINE" : apiState === "offline" ? "CORE OFFLINE" : "CONNECTING";
@@ -52,7 +49,8 @@ function App() {
           <div className="core-badge" data-state={apiState} title={api.baseUrl}>
             <i aria-hidden="true" />
             {coreLabel}
-            {polling && <span className="live">· LIVE</span>}
+            {connection === "live" && <span className="live">· LIVE</span>}
+            {connection === "polling" && <span className="live poll">· POLLING</span>}
           </div>
         </header>
 
@@ -80,7 +78,7 @@ function App() {
 
         <div className="duo">
           <ExecutionGraph report={report} />
-          <EventTimeline taskId={report?.task.id} refreshKey={refreshKey} />
+          <EventTimeline taskId={report?.task.id} events={events} />
         </div>
 
         <SystemReport report={report} />

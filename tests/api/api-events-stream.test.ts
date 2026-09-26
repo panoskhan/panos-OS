@@ -194,6 +194,22 @@ test("event stream for an already-finished task caught up via Last-Event-ID just
   });
 });
 
+test("event stream tells the browser how long to wait before reconnecting", async () => {
+  await withApi(
+    async (base, orchestrator) => {
+      const { task } = await createTask(base, ANALYSIS_GOAL);
+      await orchestrator.whenSettled(task.id);
+
+      const stream = await openStream(`${base}/v1/tasks/${task.id}/events`);
+
+      assert.deepEqual(await stream.next(), { retry: "25" });
+      stream.close();
+    },
+    new KhanOrchestrator(),
+    { retryMs: 25 }
+  );
+});
+
 test("events endpoint still returns JSON unless the client asks for a stream", async () => {
   await withApi(async (base, orchestrator) => {
     const { task } = await createTask(base, ANALYSIS_GOAL);

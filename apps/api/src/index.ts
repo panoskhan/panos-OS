@@ -27,6 +27,8 @@ export interface KhanApiServerOptions {
   corsOrigins?: string[];
   /** Interval between keep-alive comments on event streams. */
   heartbeatMs?: number;
+  /** How long a browser waits before reconnecting a dropped event stream. */
+  retryMs?: number;
 }
 
 function corsOriginsFromEnv(): string[] {
@@ -151,7 +153,8 @@ function streamTaskEvents(
   res: ServerResponse,
   { taskId, afterSeq }: EventStreamRequest,
   cors: Record<string, string>,
-  heartbeatMs: number
+  heartbeatMs: number,
+  retryMs: number
 ): void {
   res.writeHead(200, {
     ...cors,
@@ -160,7 +163,7 @@ function streamTaskEvents(
     Connection: "keep-alive",
     "X-Accel-Buffering": "no"
   });
-  res.write(`retry: ${SSE_RETRY_MS}\n\n`);
+  res.write(`retry: ${retryMs}\n\n`);
 
   let lastSentSeq = afterSeq;
   let closed = false;
@@ -258,7 +261,7 @@ function toError(error: unknown): { status: number; body: ApiError; headers?: Re
 
 export function createKhanApiServer(
   orchestrator = new KhanOrchestrator(),
-  { corsOrigins = corsOriginsFromEnv(), heartbeatMs = DEFAULT_HEARTBEAT_MS }: KhanApiServerOptions = {}
+  { corsOrigins = corsOriginsFromEnv(), heartbeatMs = DEFAULT_HEARTBEAT_MS, retryMs = SSE_RETRY_MS }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
   return createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -274,7 +277,7 @@ export function createKhanApiServer(
 
     route(orchestrator, req).then(
       (result) => {
-        if ("kind" in result) streamTaskEvents(orchestrator, res, result, cors, heartbeatMs);
+        if ("kind" in result) streamTaskEvents(orchestrator, res, result, cors, heartbeatMs, retryMs);
         else send(res, result[0], result[1], cors);
       },
       (error: unknown) => {
