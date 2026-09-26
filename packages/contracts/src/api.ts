@@ -26,7 +26,7 @@ export interface PlanStepView {
 export interface ExecutionEntryView {
   stepId: string;
   agent: string;
-  status: "completed" | "failed" | "waiting_approval";
+  status: "running" | "completed" | "failed" | "waiting_approval";
   output?: AgentResult;
 }
 
@@ -47,6 +47,7 @@ export type TaskEventType =
   | "task.created"
   | "task.status_changed"
   | "plan.created"
+  | "step.started"
   | "step.completed"
   | "step.failed"
   | "step.waiting_approval"

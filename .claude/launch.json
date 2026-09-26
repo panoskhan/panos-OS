@@ -4,7 +4,7 @@
     {
       "name": "khan-api",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "api"],
+      "runtimeArgs": ["run", "api:demo"],
       "port": 3001
     },
     {

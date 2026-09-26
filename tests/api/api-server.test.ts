@@ -3,16 +3,21 @@ import test from "node:test";
 import type { AddressInfo } from "node:net";
 import { createKhanApiServer } from "../../apps/api/src/index";
 import type { TaskEventsResponse, TaskResponse } from "../../packages/contracts/src/api";
+import { KhanOrchestrator } from "../../services/orchestrator/src/orchestrator";
+import { gatedHandler, stepEvents, stepStarted, waitForEvent } from "../support/orchestration";
 
 const ANALYSIS_GOAL = "Analyze this project and identify the next engineering tasks.";
 const GITHUB_GOAL = "Implement the fix and push the changes to GitHub.";
 
-async function withApi(fn: (base: string) => Promise<void>) {
-  const server = createKhanApiServer();
+async function withApi(
+  fn: (base: string, orchestrator: KhanOrchestrator) => Promise<void>,
+  orchestrator = new KhanOrchestrator()
+) {
+  const server = createKhanApiServer(orchestrator);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   try {
-    await fn(`http://127.0.0.1:${port}`);
+    await fn(`http://127.0.0.1:${port}`, orchestrator);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -32,6 +37,19 @@ async function createTask(base: string, goal: string): Promise<TaskResponse> {
   return (await response.json()) as TaskResponse;
 }
 
+async function getTask(base: string, taskId: string): Promise<TaskResponse> {
+  const response = await fetch(`${base}/v1/tasks/${taskId}`);
+  assert.equal(response.status, 200);
+  return (await response.json()) as TaskResponse;
+}
+
+/** Creates a task over HTTP and waits (via whenSettled) until its execution loop is idle. */
+async function createSettledTask(base: string, orchestrator: KhanOrchestrator, goal: string): Promise<TaskResponse> {
+  const created = await createTask(base, goal);
+  await orchestrator.whenSettled(created.task.id);
+  return getTask(base, created.task.id);
+}
+
 test("api serves health", async () => {
   await withApi(async (base) => {
     const response = await fetch(`${base}/health`);
@@ -40,19 +58,21 @@ test("api serves health", async () => {
   });
 });
 
-test("api creates, fetches and records events for a completed task", async () => {
-  await withApi(async (base) => {
+test("api create returns executing immediately, then the task completes in the background", async () => {
+  await withApi(async (base, orchestrator) => {
     const created = await createTask(base, ANALYSIS_GOAL);
-    assert.equal(created.task.status, "completed");
-    assert.equal(created.verification.passed, true);
+    assert.equal(created.task.status, "executing");
+    assert.deepEqual(created.execution, []);
     assert.match(created.task.id, /^task_[0-9a-f-]{36}$/);
 
-    const fetched = await fetch(`${base}/v1/tasks/${created.task.id}`);
-    assert.equal(fetched.status, 200);
-    assert.deepEqual(await fetched.json(), created);
+    const settled = await orchestrator.whenSettled(created.task.id);
+    assert.equal(settled.task.status, "completed");
+    assert.equal(settled.verification.passed, true);
+    assert.deepEqual(await getTask(base, created.task.id), settled);
 
     const eventsResponse = await fetch(`${base}/v1/tasks/${created.task.id}/events`);
     assert.equal(eventsResponse.status, 200);
+    assert.match(eventsResponse.headers.get("content-type") ?? "", /application\/json/);
     const { taskId, events } = (await eventsResponse.json()) as TaskEventsResponse;
     assert.equal(taskId, created.task.id);
     assert.deepEqual(events.map((event) => event.seq), events.map((_, index) => index + 1));
@@ -61,29 +81,60 @@ test("api creates, fetches and records events for a completed task", async () =>
       events.filter((event) => event.type === "task.status_changed").map((event) => event.data.to),
       ["understanding", "planning", "executing", "verifying", "completed"]
     );
-    assert.deepEqual(
-      events.filter((event) => event.type === "step.completed").map((event) => event.data.stepId),
-      ["inspect", "analyze", "qa"]
-    );
+    assert.deepEqual(stepEvents(events), [
+      ["step.started", "inspect"],
+      ["step.completed", "inspect"],
+      ["step.started", "analyze"],
+      ["step.completed", "analyze"],
+      ["step.started", "qa"],
+      ["step.completed", "qa"]
+    ]);
   });
+});
+
+test("api GET shows the step that is currently running", async () => {
+  const gate = gatedHandler();
+  await withApi(async (base, orchestrator) => {
+    const created = await createTask(base, ANALYSIS_GOAL);
+
+    await waitForEvent(orchestrator, created.task.id, stepStarted("inspect"));
+    const running = await getTask(base, created.task.id);
+    assert.equal(running.task.status, "executing");
+    assert.deepEqual(running.execution.map((entry) => [entry.stepId, entry.status]), [["inspect", "running"]]);
+
+    gate.releaseNext();
+    await waitForEvent(orchestrator, created.task.id, stepStarted("analyze"));
+    assert.deepEqual((await getTask(base, created.task.id)).execution.map((entry) => [entry.stepId, entry.status]), [
+      ["inspect", "completed"],
+      ["analyze", "running"]
+    ]);
+
+    gate.releaseNext();
+    await orchestrator.whenSettled(created.task.id);
+    assert.equal((await getTask(base, created.task.id)).task.status, "completed");
+  }, new KhanOrchestrator(undefined, undefined, gate.handler));
 });
 
 test("api assigns unique task ids", async () => {
-  await withApi(async (base) => {
+  await withApi(async (base, orchestrator) => {
     const [first, second] = await Promise.all([createTask(base, ANALYSIS_GOAL), createTask(base, ANALYSIS_GOAL)]);
     assert.notEqual(first.task.id, second.task.id);
+    await Promise.all([orchestrator.whenSettled(first.task.id), orchestrator.whenSettled(second.task.id)]);
   });
 });
 
-test("api approval resumes the gated step and completes the task", async () => {
-  await withApi(async (base) => {
-    const created = await createTask(base, GITHUB_GOAL);
+test("api approval returns 202 and resumes the gated step in the background", async () => {
+  await withApi(async (base, orchestrator) => {
+    const created = await createSettledTask(base, orchestrator, GITHUB_GOAL);
     assert.equal(created.task.status, "waiting_approval");
     assert.deepEqual(created.verification.checks, ["approval-required"]);
 
     const approved = await post(`${base}/v1/tasks/${created.task.id}/approve`);
-    assert.equal(approved.status, 200);
-    const report = (await approved.json()) as TaskResponse;
+    assert.equal(approved.status, 202);
+    assert.equal(((await approved.json()) as TaskResponse).task.status, "executing");
+
+    await orchestrator.whenSettled(created.task.id);
+    const report = await getTask(base, created.task.id);
     assert.equal(report.task.status, "completed");
     assert.equal(report.verification.passed, true);
     assert.deepEqual(report.execution.map((entry) => [entry.stepId, entry.status]), [
@@ -107,8 +158,8 @@ test("api approval resumes the gated step and completes the task", async () => {
 });
 
 test("api rejection fails the task without running the gated step", async () => {
-  await withApi(async (base) => {
-    const created = await createTask(base, GITHUB_GOAL);
+  await withApi(async (base, orchestrator) => {
+    const created = await createSettledTask(base, orchestrator, GITHUB_GOAL);
     const rejected = await post(`${base}/v1/tasks/${created.task.id}/reject`, { reason: "Not ready to push" });
     assert.equal(rejected.status, 200);
     const report = (await rejected.json()) as TaskResponse;
@@ -123,8 +174,8 @@ test("api rejection fails the task without running the gated step", async () => 
 });
 
 test("api cancels a waiting task and refuses to cancel finished tasks", async () => {
-  await withApi(async (base) => {
-    const waiting = await createTask(base, GITHUB_GOAL);
+  await withApi(async (base, orchestrator) => {
+    const waiting = await createSettledTask(base, orchestrator, GITHUB_GOAL);
     const cancelled = await post(`${base}/v1/tasks/${waiting.task.id}/cancel`);
     assert.equal(cancelled.status, 200);
     const report = (await cancelled.json()) as TaskResponse;
@@ -134,9 +185,28 @@ test("api cancels a waiting task and refuses to cancel finished tasks", async ()
     assert.equal((await post(`${base}/v1/tasks/${waiting.task.id}/cancel`)).status, 409);
     assert.equal((await post(`${base}/v1/tasks/${waiting.task.id}/approve`)).status, 409);
 
-    const completed = await createTask(base, ANALYSIS_GOAL);
+    const completed = await createSettledTask(base, orchestrator, ANALYSIS_GOAL);
+    assert.equal(completed.task.status, "completed");
     assert.equal((await post(`${base}/v1/tasks/${completed.task.id}/cancel`)).status, 409);
   });
+});
+
+test("api cancels a task while a step is running", async () => {
+  const gate = gatedHandler();
+  await withApi(async (base, orchestrator) => {
+    const created = await createTask(base, ANALYSIS_GOAL);
+    await waitForEvent(orchestrator, created.task.id, stepStarted("inspect"));
+
+    const cancelled = await post(`${base}/v1/tasks/${created.task.id}/cancel`, { reason: "Stop" });
+    assert.equal(cancelled.status, 200);
+    assert.equal(((await cancelled.json()) as TaskResponse).task.status, "cancelled");
+
+    gate.releaseNext();
+    await orchestrator.whenSettled(created.task.id);
+    const report = await getTask(base, created.task.id);
+    assert.equal(report.task.status, "cancelled");
+    assert.deepEqual(report.execution.map((entry) => [entry.stepId, entry.status]), [["inspect", "completed"]]);
+  }, new KhanOrchestrator(undefined, undefined, gate.handler));
 });
 
 test("api allows CORS only for configured browser origins", async () => {

@@ -3,9 +3,11 @@ import type {
   ApiError,
   CreateTaskRequest,
   HealthResponse,
+  TaskEvent,
   TaskEventsResponse,
   TaskResponse
 } from "../../../packages/contracts/src/api";
+import type { TaskStatus } from "../../../packages/contracts/src/task";
 import {
   InvalidTaskStateError,
   KhanOrchestrator,
@@ -16,10 +18,15 @@ const PORT = Number(process.env.API_PORT ?? 3001);
 const MAX_BODY_BYTES = 1024 * 1024;
 const TASK_ROUTE = /^\/v1\/tasks\/([^/]+)(?:\/(approve|reject|cancel|events))?$/;
 const DEFAULT_CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
+const DEFAULT_HEARTBEAT_MS = 15_000;
+const SSE_RETRY_MS = 2_000;
+const TERMINAL_STATUSES: ReadonlySet<TaskStatus> = new Set(["completed", "failed", "cancelled"]);
 
 export interface KhanApiServerOptions {
   /** Browser origins allowed to call the API. Defaults to API_CORS_ORIGINS or the Vite dev server. */
   corsOrigins?: string[];
+  /** Interval between keep-alive comments on event streams. */
+  heartbeatMs?: number;
 }
 
 function corsOriginsFromEnv(): string[] {
@@ -43,7 +50,14 @@ class HttpError extends Error {
   }
 }
 
-type RouteResult = [status: number, payload: HealthResponse | TaskResponse | TaskEventsResponse];
+interface EventStreamRequest {
+  kind: "event-stream";
+  taskId: string;
+  /** Only events with a higher sequence number are sent (from the Last-Event-ID header). */
+  afterSeq: number;
+}
+
+type RouteResult = [status: number, payload: HealthResponse | TaskResponse | TaskEventsResponse] | EventStreamRequest;
 
 function send(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string> = {}) {
   const body = JSON.stringify(payload);
@@ -112,6 +126,76 @@ function decodeTaskId(raw: string): string {
   }
 }
 
+function wantsEventStream(req: IncomingMessage): boolean {
+  return (req.headers.accept ?? "").includes("text/event-stream");
+}
+
+function lastEventId(req: IncomingMessage): number {
+  const raw = req.headers["last-event-id"];
+  const seq = Number(Array.isArray(raw) ? raw[0] : raw);
+  return Number.isInteger(seq) && seq > 0 ? seq : 0;
+}
+
+function isTerminalEvent(event: TaskEvent): boolean {
+  return event.type === "task.status_changed" && TERMINAL_STATUSES.has(event.data.to as TaskStatus);
+}
+
+/**
+ * Streams a task's events as Server-Sent Events: replays events after `afterSeq`, then sends
+ * new ones live. Each event's `id` is its sequence number, so a reconnecting EventSource resumes
+ * via Last-Event-ID. Once the task reaches a terminal status the server sends `event: end` and
+ * closes, which tells the client to stop reconnecting.
+ */
+function streamTaskEvents(
+  orchestrator: KhanOrchestrator,
+  res: ServerResponse,
+  { taskId, afterSeq }: EventStreamRequest,
+  cors: Record<string, string>,
+  heartbeatMs: number
+): void {
+  res.writeHead(200, {
+    ...cors,
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  res.write(`retry: ${SSE_RETRY_MS}\n\n`);
+
+  let lastSentSeq = afterSeq;
+  let closed = false;
+  let unsubscribe = () => {};
+  let heartbeat: NodeJS.Timeout | undefined;
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    unsubscribe();
+    clearInterval(heartbeat);
+    res.end();
+  };
+  const end = () => {
+    if (closed) return;
+    res.write("event: end\ndata: {}\n\n");
+    close();
+  };
+  const sendEvent = (event: TaskEvent) => {
+    if (closed || event.seq <= lastSentSeq) return;
+    lastSentSeq = event.seq;
+    res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);
+    if (isTerminalEvent(event)) end();
+  };
+
+  // Subscribe before replaying so no event can fall between the history and the live feed;
+  // the sequence check drops anything already sent.
+  unsubscribe = orchestrator.subscribe(taskId, sendEvent);
+  heartbeat = setInterval(() => res.write(": keep-alive\n\n"), heartbeatMs);
+  res.on("close", close);
+
+  for (const event of orchestrator.events(taskId)) sendEvent(event);
+  if (TERMINAL_STATUSES.has(orchestrator.get(taskId).task.status)) end();
+}
+
 async function route(orchestrator: KhanOrchestrator, req: IncomingMessage): Promise<RouteResult> {
   const method = req.method ?? "GET";
   const { pathname } = new URL(req.url ?? "/", "http://localhost");
@@ -134,9 +218,11 @@ async function route(orchestrator: KhanOrchestrator, req: IncomingMessage): Prom
 
   if (action === undefined || action === "events") {
     if (method !== "GET") throw methodNotAllowed(["GET"]);
-    return action === "events"
-      ? [200, { taskId, events: orchestrator.events(taskId) }]
-      : [200, orchestrator.get(taskId)];
+    if (action === undefined) return [200, orchestrator.get(taskId)];
+
+    if (!wantsEventStream(req)) return [200, { taskId, events: orchestrator.events(taskId) }];
+    orchestrator.get(taskId); // Unknown tasks get a JSON 404 before any stream headers are sent.
+    return { kind: "event-stream", taskId, afterSeq: lastEventId(req) };
   }
 
   if (method !== "POST") throw methodNotAllowed(["POST"]);
@@ -144,7 +230,7 @@ async function route(orchestrator: KhanOrchestrator, req: IncomingMessage): Prom
   switch (action) {
     case "approve":
       asObject(body);
-      return [200, orchestrator.approve(taskId)];
+      return [202, orchestrator.approve(taskId)];
     case "reject":
       return [200, orchestrator.reject(taskId, parseReason(body))];
     case "cancel":
@@ -172,7 +258,7 @@ function toError(error: unknown): { status: number; body: ApiError; headers?: Re
 
 export function createKhanApiServer(
   orchestrator = new KhanOrchestrator(),
-  { corsOrigins = corsOriginsFromEnv() }: KhanApiServerOptions = {}
+  { corsOrigins = corsOriginsFromEnv(), heartbeatMs = DEFAULT_HEARTBEAT_MS }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
   return createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -187,7 +273,10 @@ export function createKhanApiServer(
     }
 
     route(orchestrator, req).then(
-      ([status, payload]) => send(res, status, payload, cors),
+      (result) => {
+        if ("kind" in result) streamTaskEvents(orchestrator, res, result, cors, heartbeatMs);
+        else send(res, result[0], result[1], cors);
+      },
       (error: unknown) => {
         const { status, body, headers } = toError(error);
         send(res, status, body, { ...cors, ...headers });

@@ -3,8 +3,8 @@ import test from "node:test";
 import { KhanOrchestrator } from "../../services/orchestrator/src/orchestrator";
 import { PermissionEngine } from "../../services/permissions/src/index";
 
-test("vertical slice: request -> plan -> agents -> QA -> report", () => {
-  const report = new KhanOrchestrator().run(
+test("vertical slice: request -> plan -> agents -> QA -> report", async () => {
+  const report = await new KhanOrchestrator().run(
     "Analyze this project and identify the next engineering tasks."
   );
 
