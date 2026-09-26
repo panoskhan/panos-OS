@@ -27,60 +27,22 @@ export function verifyAnalysis(results: AgentResult[]): VerificationResult {
   };
 }
 
-function assessResults(results: AgentResult[], goal: string) {
-  const findings = results.flatMap((result) => result.findings ?? []);
-  return {
-    present: results.length > 0,
-    successful:
-      results.length > 0 &&
-      results.every((result) => result.status === "success"),
-    hasFindings: findings.length > 0,
-    findingCount: findings.length,
-    goalReferenced:
-      results.length > 0 &&
-      results.every(
-        (result) =>
-          result.summary.includes(goal) ||
-          (result.findings ?? []).some((finding) => finding.includes(goal))
-      )
-  };
-}
-
-/**
- * Names only the QA checks that failed, with one finding per failed check.
- * Used to report why independent QA rejected a task.
- */
-export function describeQaFailures(
-  results: AgentResult[],
-  goal: string
-): Pick<VerificationResult, "checks" | "findings"> {
-  const assessment = assessResults(results, goal);
-  if (!assessment.present) {
-    return { checks: ["agent-results-present"], findings: ["No agent results were produced."] };
-  }
-
-  const checks: string[] = [];
-  const findings: string[] = [];
-  if (!assessment.successful) {
-    checks.push("agent-results-successful");
-    findings.push("One or more agent executions reported failure.");
-  }
-  if (!assessment.hasFindings) {
-    checks.push("findings-present");
-    findings.push("No findings were produced.");
-  }
-  if (!assessment.goalReferenced) {
-    checks.push("agent-results-reference-goal");
-    findings.push("At least one execution result does not reference the requested goal.");
-  }
-  return { checks, findings };
-}
-
 export function verifyIndependentQa(
   results: AgentResult[],
   goal: string
 ): VerificationResult {
-  const { successful, hasFindings, findingCount, goalReferenced } = assessResults(results, goal);
+  const findings = results.flatMap((result) => result.findings ?? []);
+  const successful =
+    results.length > 0 &&
+    results.every((result) => result.status === "success");
+  const hasFindings = findings.length > 0;
+  const goalReferenced =
+    results.length > 0 &&
+    results.every(
+      (result) =>
+        result.summary.includes(goal) ||
+        (result.findings ?? []).some((finding) => finding.includes(goal))
+    );
 
   const checks = [
     "agent-results-present",
@@ -95,7 +57,7 @@ export function verifyIndependentQa(
       ? "All agent executions reported success."
       : "One or more agent executions reported failure.",
     hasFindings
-      ? `Reviewed ${findingCount} finding(s).`
+      ? `Reviewed ${findings.length} finding(s).`
       : "No findings were produced.",
     goalReferenced
       ? "Execution results reference the requested goal."

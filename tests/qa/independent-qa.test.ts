@@ -16,6 +16,12 @@ test("independent QA rejects a failed agent result", () => {
   const verification = verifyIndependentQa(results, goal);
 
   assert.equal(verification.passed, false);
+  assert.equal(
+    ["agent-results-present", "agent-results-successful", "findings-present", "goal-referenced"].every((check) =>
+      verification.checks.includes(check)
+    ),
+    true
+  );
   assert.ok(
     verification.findings.includes(
       "One or more agent executions reported failure."

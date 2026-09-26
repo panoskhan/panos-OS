@@ -7,7 +7,7 @@ import { TaskStore, type TaskRecord } from "./task-store";
 import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner/src/index";
 import { validatePlan } from "../../../agents/planner/src/validator";
 import { codingAgent } from "../../../agents/coding/src/index";
-import { qaAgent, describeQaFailures, verifyIndependentQa, type VerificationResult } from "../../../agents/qa/src/index";
+import { qaAgent, verifyIndependentQa, type VerificationResult } from "../../../agents/qa/src/index";
 import { AgentRuntime, type AgentHandler } from "../../agents/src/runtime";
 
 export interface ExecutionEntry {
@@ -226,8 +226,10 @@ export class KhanOrchestrator {
 
       if (runtimeResult.status === "failed") {
         if (step.agent === qaAgent.id) {
-          // Report the specific QA checks that rejected the prior agent results.
-          return this.fail(record, { passed: false, ...describeQaFailures(record.agentResults, task.goal) });
+          // A failed QA result is itself a valid negative verification outcome.
+          // Preserve the independent QA contract instead of collapsing it into
+          // the generic agent-execution failure shape.
+          return this.fail(record, verifyIndependentQa(record.agentResults, task.goal));
         }
         return this.fail(record, {
           passed: false,
