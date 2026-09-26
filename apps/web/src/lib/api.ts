@@ -29,6 +29,8 @@ export interface KhanApiClient {
   rejectTask(taskId: string, reason?: string): Promise<TaskResponse>;
   cancelTask(taskId: string, reason?: string): Promise<TaskResponse>;
   getTaskEvents(taskId: string): Promise<TaskEventsResponse>;
+  /** URL of the task's live event stream (open it with EventSource). */
+  eventsUrl(taskId: string): string;
 }
 
 export function createApiClient(baseUrl: string = DEFAULT_API_URL): KhanApiClient {
@@ -59,7 +61,8 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL): KhanApiClien
     approveTask: (taskId) => request<TaskResponse>("POST", `${taskPath(taskId)}/approve`),
     rejectTask: (taskId, reason) => request<TaskResponse>("POST", `${taskPath(taskId)}/reject`, decision(reason)),
     cancelTask: (taskId, reason) => request<TaskResponse>("POST", `${taskPath(taskId)}/cancel`, decision(reason)),
-    getTaskEvents: (taskId) => request<TaskEventsResponse>("GET", `${taskPath(taskId)}/events`)
+    getTaskEvents: (taskId) => request<TaskEventsResponse>("GET", `${taskPath(taskId)}/events`),
+    eventsUrl: (taskId) => `${root}${taskPath(taskId)}/events`
   };
 }
 

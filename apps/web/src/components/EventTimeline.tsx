@@ -1,12 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { TaskEvent } from "../../../../packages/contracts/src/api";
-import { api, type KhanApiClient } from "../lib/api";
 
 interface EventTimelineProps {
   taskId: string | undefined;
-  /** Changes whenever the task changes, so the log is re-fetched. */
-  refreshKey: string;
-  client?: KhanApiClient;
+  events: TaskEvent[];
 }
 
 function describe(event: TaskEvent): string {
@@ -35,31 +32,8 @@ function describe(event: TaskEvent): string {
 }
 
 /** The "Live agent activity" log: the task's real event stream, newest at the bottom. */
-export function EventTimeline({ taskId, refreshKey, client = api }: EventTimelineProps) {
-  const [events, setEvents] = useState<TaskEvent[]>([]);
-  const [error, setError] = useState<string | null>(null);
+export function EventTimeline({ taskId, events }: EventTimelineProps) {
   const listRef = useRef<HTMLOListElement>(null);
-
-  useEffect(() => {
-    if (!taskId) {
-      setEvents([]);
-      return;
-    }
-    let active = true;
-    client.getTaskEvents(taskId).then(
-      (response) => {
-        if (!active) return;
-        setEvents(response.events);
-        setError(null);
-      },
-      (fetchError: unknown) => {
-        if (active) setError(fetchError instanceof Error ? fetchError.message : String(fetchError));
-      }
-    );
-    return () => {
-      active = false;
-    };
-  }, [client, taskId, refreshKey]);
 
   useEffect(() => {
     const list = listRef.current;
@@ -72,7 +46,6 @@ export function EventTimeline({ taskId, refreshKey, client = api }: EventTimelin
         <h2 id="activity-title">Live agent activity</h2>
         <span className="muted">{events.length} events</span>
       </header>
-      {error && <p className="error-text">{error}</p>}
       {!taskId ? (
         <p className="empty">Every planner, agent and QA event appears here as it happens.</p>
       ) : (
