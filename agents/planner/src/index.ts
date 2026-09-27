@@ -1,5 +1,18 @@
 import type { AgentDefinition } from "../../../packages/contracts/src/agent";
 
+/** Why planning failed, as a code the audit log can record. */
+export type PlanningErrorCode = "empty_goal";
+
+export class PlanningError extends Error {
+  constructor(
+    readonly code: PlanningErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = "PlanningError";
+  }
+}
+
 /** The agents a plan step may name. Each one needs a handler registered in the runtime. */
 export const PLAN_AGENTS = ["coding", "qa"] as const;
 export type PlanAgent = (typeof PLAN_AGENTS)[number];
@@ -56,7 +69,7 @@ function step(
 
 export function createPlan(goal: string): PlanStep[] {
   const normalized = goal.trim();
-  if (!normalized) throw new Error("Goal is required");
+  if (!normalized) throw new PlanningError("empty_goal", "Goal is required");
 
   const kind = classifyGoal(normalized);
 

@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { join } from "node:path";
 import type {
   ApiError,
+  AuditResponse,
   CreateTaskRequest,
   HealthResponse,
   StatusResponse,
@@ -18,6 +19,7 @@ import {
   KhanOrchestrator,
   TaskNotFoundError
 } from "../../../services/orchestrator/src/orchestrator";
+import { AuditLog, DEFAULT_PAGE_LIMIT, FileAuditSink, MAX_PAGE_LIMIT, type AuditQuery } from "../../../services/audit/src/index";
 import { collectStatus } from "../../../services/status/src/index";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
@@ -79,8 +81,82 @@ interface EventStreamRequest {
 }
 
 type RouteResult =
-  | [status: number, payload: HealthResponse | StatusResponse | TaskResponse | TaskEventsResponse]
+  | [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse]
   | EventStreamRequest;
+
+const AUDIT_ORDERS = ["asc", "desc"] as const;
+
+function badQuery(code: string, detail: string): HttpError {
+  return new HttpError(400, code, detail);
+}
+
+function textParam(params: URLSearchParams, name: string): string | undefined {
+  const value = params.get(name);
+  if (value === null) return undefined;
+  if (!value.trim()) throw badQuery(`invalid_${name}`, `${name} must not be empty`);
+  return value;
+}
+
+function timeParam(params: URLSearchParams, name: "since" | "until"): string | undefined {
+  const value = textParam(params, name);
+  if (value !== undefined && Number.isNaN(Date.parse(value))) throw badQuery(`invalid_${name}`, `${name} must be an ISO 8601 timestamp`);
+  return value;
+}
+
+function auditQueryFrom(params: URLSearchParams): { query: AuditQuery; order: "asc" | "desc"; limit: number } {
+  const order = (params.get("order") ?? "desc") as (typeof AUDIT_ORDERS)[number];
+  if (!AUDIT_ORDERS.includes(order)) throw badQuery("invalid_order", "order must be asc or desc");
+
+  const rawLimit = params.get("limit");
+  const limit = rawLimit === null ? DEFAULT_PAGE_LIMIT : Number(rawLimit);
+  if (!/^\d+$/.test(rawLimit ?? "1") || limit < 1 || limit > MAX_PAGE_LIMIT) {
+    throw badQuery("invalid_limit", `limit must be a whole number from 1 to ${MAX_PAGE_LIMIT}`);
+  }
+
+  const rawCursor = params.get("cursor");
+  if (rawCursor !== null && (!/^\d+$/.test(rawCursor) || Number(rawCursor) < 1)) {
+    throw badQuery("invalid_cursor", "cursor must be the nextCursor value from a previous page");
+  }
+
+  return {
+    order,
+    limit,
+    query: {
+      taskId: textParam(params, "taskId"),
+      type: textParam(params, "type"),
+      actor: textParam(params, "actor"),
+      since: timeParam(params, "since"),
+      until: timeParam(params, "until"),
+      order,
+      limit,
+      cursor: rawCursor === null ? null : Number(rawCursor)
+    }
+  };
+}
+
+function readAudit(orchestrator: KhanOrchestrator, params: URLSearchParams): AuditResponse {
+  const { query, order, limit } = auditQueryFrom(params);
+  const { entries, nextCursor, total } = orchestrator.auditLog.query(query);
+  return { entries, page: { order, limit, nextCursor: nextCursor === null ? null : String(nextCursor) }, total };
+}
+
+/** Records an attempt that was refused because of the task's state (approving a task that isn't waiting, and so on). */
+function refusalAudited<T>(orchestrator: KhanOrchestrator, action: string, taskId: string, attempt: () => T): T {
+  try {
+    return attempt();
+  } catch (error) {
+    if (error instanceof InvalidTaskStateError) {
+      orchestrator.auditLog.record({
+        at: new Date().toISOString(),
+        taskId,
+        type: "request.refused",
+        actor: "anonymous",
+        data: { action, taskStatus: error.status, reason: error.message }
+      });
+    }
+    throw error;
+  }
+}
 
 function send(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string> = {}) {
   const body = JSON.stringify(payload);
@@ -159,8 +235,14 @@ function lastEventId(req: IncomingMessage): number {
   return Number.isInteger(seq) && seq > 0 ? seq : 0;
 }
 
+/**
+ * The last event a task emits. Completion and failure end with their own event, which follows the status change,
+ * so the stream must not close on the status change itself. A cancel emits its own event first, so it ends on the
+ * status change.
+ */
 function isTerminalEvent(event: TaskEvent): boolean {
-  return event.type === "task.status_changed" && TERMINAL_STATUSES.has(event.data.to as TaskStatus);
+  if (event.type === "task.completed" || event.type === "task.failed") return true;
+  return event.type === "task.status_changed" && event.data.to === "cancelled";
 }
 
 /**
@@ -226,7 +308,12 @@ async function route(
   status: () => StatusResponse
 ): Promise<RouteResult> {
   const method = req.method ?? "GET";
-  const { pathname } = new URL(req.url ?? "/", "http://localhost");
+  const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
+
+  if (pathname === "/v1/audit") {
+    if (method !== "GET") throw methodNotAllowed(["GET"]);
+    return [200, readAudit(orchestrator, searchParams)];
+  }
 
   if (pathname === "/health") {
     if (method !== "GET") throw methodNotAllowed(["GET"]);
@@ -261,13 +348,18 @@ async function route(
   if (method !== "POST") throw methodNotAllowed(["POST"]);
   const body = await readJsonBody(req);
   switch (action) {
-    case "approve":
-      asObject(body);
-      return [202, orchestrator.approve(taskId)];
-    case "reject":
-      return [200, orchestrator.reject(taskId, parseReason(body))];
-    case "cancel":
-      return [200, orchestrator.cancel(taskId, parseReason(body))];
+    case "approve": {
+      const reason = parseReason(body);
+      return [202, refusalAudited(orchestrator, "approve", taskId, () => orchestrator.approve(taskId, reason))];
+    }
+    case "reject": {
+      const reason = parseReason(body);
+      return [200, refusalAudited(orchestrator, "reject", taskId, () => orchestrator.reject(taskId, reason))];
+    }
+    case "cancel": {
+      const reason = parseReason(body);
+      return [200, refusalAudited(orchestrator, "cancel", taskId, () => orchestrator.cancel(taskId, reason))];
+    }
     default:
       throw new HttpError(404, "not_found");
   }
@@ -336,7 +428,13 @@ export function createKhanApiServer(
 }
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
-  createKhanApiServer().listen(PORT, "127.0.0.1", () => {
+  // Run as a server, the audit log is kept in a file (git-ignored data/ folder unless KHAN_AUDIT_FILE says otherwise).
+  const auditFile = process.env.KHAN_AUDIT_FILE ?? join(process.cwd(), "data", "audit.jsonl");
+  const audit = new AuditLog(new FileAuditSink(auditFile));
+  const orchestrator = new KhanOrchestrator(undefined, undefined, undefined, undefined, audit);
+  createKhanApiServer(orchestrator).listen(PORT, "127.0.0.1", () => {
+    const health = audit.health();
     console.log(`KHAN OS API: http://127.0.0.1:${PORT}`);
+    console.log(`Audit log: ${auditFile} (${health.entries} entries, chain ${health.integrity.ok ? "intact" : `BROKEN at entry ${health.integrity.brokenAt}`})`);
   });
 }

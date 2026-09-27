@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import type {
   ApiError,
+  AuditResponse,
   CreateTaskRequest,
   HealthResponse,
   StatusResponse,
@@ -9,6 +10,18 @@ import type {
 } from "../../../../packages/contracts/src/api";
 
 export const DEFAULT_API_URL = "http://127.0.0.1:3001";
+
+/** Filters and paging for GET /v1/audit. `cursor` is the previous page's `nextCursor`. */
+export interface AuditParams {
+  taskId?: string;
+  type?: string;
+  actor?: string;
+  since?: string;
+  until?: string;
+  order?: "asc" | "desc";
+  cursor?: string;
+  limit?: number;
+}
 
 export class ApiRequestError extends Error {
   constructor(
@@ -26,6 +39,8 @@ export interface KhanApiClient {
   health(): Promise<HealthResponse>;
   /** Self-test results for the system's components (GET /v1/status). */
   getStatus(): Promise<StatusResponse>;
+  /** One page of the audit log (GET /v1/audit). */
+  getAudit(params?: AuditParams): Promise<AuditResponse>;
   createTask(request: CreateTaskRequest): Promise<TaskResponse>;
   getTask(taskId: string): Promise<TaskResponse>;
   approveTask(taskId: string): Promise<TaskResponse>;
@@ -60,6 +75,12 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL): KhanApiClien
     baseUrl: root,
     health: () => request<HealthResponse>("GET", "/health"),
     getStatus: () => request<StatusResponse>("GET", "/v1/status"),
+    getAudit: (params = {}) => {
+      const query = new URLSearchParams();
+      for (const [name, value] of Object.entries(params)) if (value !== undefined) query.set(name, String(value));
+      const suffix = query.size ? `?${query}` : "";
+      return request<AuditResponse>("GET", `/v1/audit${suffix}`);
+    },
     createTask: (body) => request<TaskResponse>("POST", "/v1/tasks", body),
     getTask: (taskId) => request<TaskResponse>("GET", taskPath(taskId)),
     approveTask: (taskId) => request<TaskResponse>("POST", `${taskPath(taskId)}/approve`),

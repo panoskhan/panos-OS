@@ -18,8 +18,16 @@ function describe(event: TaskEvent): string {
     case "step.failed":
     case "step.waiting_approval":
       return `${data.stepId} (${data.agent})`;
+    case "permission.decided":
+      return `${data.stepId}: ${String(data.decision).replace("_", " ")} (${(data.permissions as string[]).join(", ")})`;
+    case "qa.verdict":
+      return data.passed ? "QA passed" : "QA failed";
+    case "task.completed":
+      return "Verified by independent QA";
+    case "task.failed":
+      return `${String(data.stage).replace("_", " ")}${(data.findings as string[] | undefined)?.[0] ? ` · ${(data.findings as string[])[0]}` : ""}`;
     case "task.approved":
-      return `${data.stepId} · ${(data.permissions as string[]).join(", ")}`;
+      return `${data.stepId} · ${(data.permissions as string[]).join(", ")}${data.reason ? ` · ${data.reason}` : ""}`;
     case "task.rejected":
       return `${data.stepId}${data.reason ? ` · ${data.reason}` : ""}`;
     case "task.cancelled":

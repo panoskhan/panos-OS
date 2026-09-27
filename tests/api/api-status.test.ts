@@ -32,7 +32,7 @@ async function getStatus(base: string, headers: Record<string, string> = {}): Pr
 
 const byId = (status: StatusResponse, id: string): ComponentStatus => status.components.find((entry) => entry.id === id)!;
 
-test("GET /v1/status reports the five components from the live server", async () => {
+test("GET /v1/status reports the six components from the live server", async () => {
   await withApi(async (base) => {
     const { response, status } = await getStatus(base);
 
@@ -50,7 +50,8 @@ test("GET /v1/status reports the five components from the live server", async ()
         ["model-router", "Model Router", "not_configured"],
         ["agents", "Agents", "up"],
         ["permissions", "Permissions", "up"],
-        ["qa", "Independent QA", "up"]
+        ["qa", "Independent QA", "up"],
+        ["audit", "Audit Log", "not_configured"]
       ]
     );
     for (const entry of status.components) assert.ok(entry.detail.length > 0, `${entry.id} explains itself`);

@@ -19,7 +19,10 @@ export interface StatusDependencies {
 
 type Outcome = Omit<ComponentStatus, "id" | "name">;
 
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const plural = (count: number, word: string) => {
+  if (count === 1) return `${count} ${word}`;
+  return `${count} ${word.endsWith("y") ? `${word.slice(0, -1)}ies` : `${word}s`}`;
+};
 
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -88,6 +91,35 @@ function probeQa(deps: StatusDependencies): Outcome {
   return outcome(problems.length ? [`QA ${problems.join(" and ")}`] : [], "Self-test passed: accepts a valid result, rejects a failed one and one that ignores the goal.");
 }
 
+function probeAudit(deps: StatusDependencies): Outcome {
+  const audit = deps.diagnostics().audit;
+  const metrics = { entries: audit.entries, writable: audit.writable ? 1 : 0, pending: audit.pending };
+
+  if (!audit.integrity.ok) {
+    return { state: "down", detail: `Hash chain broken at entry ${audit.integrity.brokenAt}: ${audit.integrity.reason}.`, metrics };
+  }
+  if (!audit.writable) {
+    const where = audit.location ?? "its storage";
+    return {
+      state: "down",
+      detail: `Not writing to ${where}: ${audit.lastError ?? "unknown error"}. ${plural(audit.entries, "entry")} held in memory, ${audit.pending} not yet written.`,
+      metrics
+    };
+  }
+  if (audit.storage === "memory") {
+    return {
+      state: "not_configured",
+      detail: `Recording in memory only, so the log is lost on restart. ${plural(audit.entries, "entry")}. Set KHAN_AUDIT_FILE to keep it.`,
+      metrics
+    };
+  }
+  return {
+    state: "up",
+    detail: `Recording to ${audit.location}. ${plural(audit.entries, "entry")}, file writable, hash chain intact.`,
+    metrics
+  };
+}
+
 function probeModelRouter(): Outcome {
   // routeModel is a pure function with no model list, and nothing in the orchestrator calls it.
   return { state: "not_configured", detail: "No models are registered and the router isn't used by the orchestrator yet." };
@@ -103,7 +135,8 @@ export function collectStatus(deps: StatusDependencies): StatusResponse {
     run("model-router", "Model Router", probeModelRouter),
     run("agents", "Agents", () => probeAgents(deps)),
     run("permissions", "Permissions", () => probePermissions(deps)),
-    run("qa", "Independent QA", () => probeQa(deps))
+    run("qa", "Independent QA", () => probeQa(deps)),
+    run("audit", "Audit Log", () => probeAudit(deps))
   ];
 
   return {

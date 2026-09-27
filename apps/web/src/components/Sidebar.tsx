@@ -33,7 +33,8 @@ const COMPONENT_NAMES: Array<[ComponentId, string]> = [
   ["model-router", "Model Router"],
   ["agents", "Agents"],
   ["permissions", "Permissions"],
-  ["qa", "Independent QA"]
+  ["qa", "Independent QA"],
+  ["audit", "Audit Log"]
 ];
 
 const AVATAR_TONE: Record<AvatarState, string> = {

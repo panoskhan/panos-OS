@@ -34,17 +34,18 @@ const withDiagnostics = (orchestrator: KhanOrchestrator, patch: Partial<Orchestr
   ...patch
 });
 
-test("a healthy system reports four components up and the model router as not configured", () => {
+test("a healthy system reports four components up; the model router and an in-memory audit log are not configured", () => {
   const status = collectStatus(depsFor(new KhanOrchestrator()));
 
   assert.equal(status.status, "ok");
-  assert.deepEqual(status.components.map((entry) => entry.id), ["orchestrator", "model-router", "agents", "permissions", "qa"]);
+  assert.deepEqual(status.components.map((entry) => entry.id), ["orchestrator", "model-router", "agents", "permissions", "qa", "audit"]);
   assert.deepEqual(states(status), {
     orchestrator: "up",
     "model-router": "not_configured",
     agents: "up",
     permissions: "up",
-    qa: "up"
+    qa: "up",
+    audit: "not_configured"
   });
   assert.equal(status.service, "test-service");
   assert.equal(status.version, "1.2.3");
@@ -173,9 +174,72 @@ test("a crashing diagnostics call takes down only what depends on it, and never 
     "model-router": "not_configured",
     agents: "down",
     permissions: "down",
-    qa: "up"
+    qa: "up",
+    audit: "down"
   });
   assert.equal(component(status, "orchestrator").detail, "Self-test crashed: store unavailable");
+});
+
+const okChain = { ok: true, entries: 42 } as const;
+const withAudit = (orchestrator: KhanOrchestrator, audit: Partial<OrchestratorDiagnostics["audit"]>) =>
+  withDiagnostics(orchestrator, { audit: { ...orchestrator.diagnostics().audit, ...audit } });
+
+test("the audit component is up, with the entry count and writability, when a file log is recording", () => {
+  const orchestrator = new KhanOrchestrator();
+  const status = collectStatus(
+    depsFor(orchestrator, {
+      diagnostics: withAudit(orchestrator, { storage: "file", location: "data/audit.jsonl", entries: 42, pending: 0, writable: true, lastError: null, integrity: okChain })
+    })
+  );
+
+  assert.equal(component(status, "audit").state, "up");
+  assert.equal(component(status, "audit").detail, "Recording to data/audit.jsonl. 42 entries, file writable, hash chain intact.");
+  assert.deepEqual(component(status, "audit").metrics, { entries: 42, writable: 1, pending: 0 });
+  assert.equal(status.status, "ok");
+
+  const one = collectStatus(depsFor(orchestrator, { diagnostics: withAudit(orchestrator, { storage: "file", location: "a.jsonl", entries: 1, integrity: { ok: true, entries: 1 } }) }));
+  assert.match(component(one, "audit").detail, /\. 1 entry, file writable/);
+});
+
+test("the audit component is not configured while the log is in memory only", () => {
+  const status = collectStatus(depsFor(new KhanOrchestrator()));
+
+  assert.equal(component(status, "audit").state, "not_configured");
+  assert.match(component(status, "audit").detail, /in memory only, so the log is lost on restart\. 0 entries\. Set KHAN_AUDIT_FILE to keep it\./);
+  assert.equal(status.status, "ok", "not configured does not degrade the system");
+});
+
+test("the audit component is down when it cannot write, and says why and how much is waiting", () => {
+  const orchestrator = new KhanOrchestrator();
+  const status = collectStatus(
+    depsFor(orchestrator, {
+      diagnostics: withAudit(orchestrator, { storage: "file", location: "/var/khan/audit.jsonl", entries: 9, pending: 3, writable: false, lastError: "EACCES: permission denied", integrity: { ok: true, entries: 6 } })
+    })
+  );
+
+  assert.equal(component(status, "audit").state, "down");
+  assert.equal(component(status, "audit").detail, "Not writing to /var/khan/audit.jsonl: EACCES: permission denied. 9 entries held in memory, 3 not yet written.");
+  assert.deepEqual(component(status, "audit").metrics, { entries: 9, writable: 0, pending: 3 });
+  assert.equal(status.status, "degraded");
+});
+
+test("the audit component is down when the hash chain is broken, even if the disk is writable", () => {
+  const orchestrator = new KhanOrchestrator();
+  const status = collectStatus(
+    depsFor(orchestrator, {
+      diagnostics: withAudit(orchestrator, {
+        storage: "file",
+        location: "data/audit.jsonl",
+        entries: 10,
+        writable: true,
+        integrity: { ok: false, entries: 10, brokenAt: 4, reason: "its contents do not match its recorded hash (it was altered)" }
+      })
+    })
+  );
+
+  assert.equal(component(status, "audit").state, "down");
+  assert.equal(component(status, "audit").detail, "Hash chain broken at entry 4: its contents do not match its recorded hash (it was altered).");
+  assert.equal(status.status, "degraded");
 });
 
 test("uptime is formatted for humans and never negative", () => {

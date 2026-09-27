@@ -199,7 +199,11 @@ ul, ol { list-style: none; margin: 0; padding: 0; }
 .timeline li[data-type="step.failed"] .event-type,
 .timeline li[data-type="task.rejected"] .event-type,
 .timeline li[data-type="task.cancelled"] .event-type { color: var(--danger); }
-.timeline li[data-type="step.completed"] .event-type { color: var(--ok); }
+.timeline li[data-type="step.completed"] .event-type,
+.timeline li[data-type="task.completed"] .event-type { color: var(--ok); }
+.timeline li[data-type="task.failed"] .event-type { color: var(--danger); }
+.timeline li[data-type="permission.decided"] .event-type,
+.timeline li[data-type="qa.verdict"] .event-type { color: var(--warn); }
 .event-data { color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
 
 /* System report */
