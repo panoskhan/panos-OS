@@ -2,6 +2,13 @@ import type { AgentResult } from "../../../packages/contracts/src/agent";
 import type { ComponentId, ComponentStatus, StatusResponse } from "../../../packages/contracts/src/api";
 import type { VerificationResult } from "../../../agents/qa/src/index";
 import type { OrchestratorDiagnostics } from "../../orchestrator/src/orchestrator";
+import type { RateLimiterDescription } from "../../rate-limit/src/index";
+
+/** The part of the rate limiter the status check needs (injectable so tests can hand in a broken one). */
+export interface RateLimiterProbe {
+  describe(): RateLimiterDescription;
+  selfTest(): string[];
+}
 
 export interface StatusDependencies {
   service: string;
@@ -15,6 +22,7 @@ export interface StatusDependencies {
   planAgents: readonly string[];
   /** The independent QA verification function. */
   verify(results: AgentResult[], goal: string): VerificationResult;
+  rateLimiter: RateLimiterProbe;
 }
 
 type Outcome = Omit<ComponentStatus, "id" | "name">;
@@ -120,6 +128,23 @@ function probeAudit(deps: StatusDependencies): Outcome {
   };
 }
 
+function probeRateLimiter(deps: StatusDependencies): Outcome {
+  const { limits, tracked, limitedTotal } = deps.rateLimiter.describe();
+  const metrics = { tasksPerMinute: limits.tasks, readPerMinute: limits.read, auditPerMinute: limits.audit, tracked, limitedTotal };
+  const problems = deps.rateLimiter.selfTest();
+  if (problems.length) return { state: "down", detail: `Self-test failed: ${problems.join("; ")}.`, metrics };
+
+  if (limits.tasks === 0 && limits.read === 0 && limits.audit === 0) {
+    return { state: "not_configured", detail: "Rate limiting is off: every limit is 0.", metrics };
+  }
+  const per = (value: number) => (value === 0 ? "off" : `${value}/min`);
+  return {
+    state: "up",
+    detail: `Per client: task creation ${per(limits.tasks)}, other requests ${per(limits.read)}, audit reads ${per(limits.audit)}. ${plural(tracked, "client bucket")} tracked, ${plural(limitedTotal, "request")} refused so far.`,
+    metrics
+  };
+}
+
 function probeModelRouter(): Outcome {
   // routeModel is a pure function with no model list, and nothing in the orchestrator calls it.
   return { state: "not_configured", detail: "No models are registered and the router isn't used by the orchestrator yet." };
@@ -136,7 +161,8 @@ export function collectStatus(deps: StatusDependencies): StatusResponse {
     run("agents", "Agents", () => probeAgents(deps)),
     run("permissions", "Permissions", () => probePermissions(deps)),
     run("qa", "Independent QA", () => probeQa(deps)),
-    run("audit", "Audit Log", () => probeAudit(deps))
+    run("audit", "Audit Log", () => probeAudit(deps)),
+    run("rate-limiter", "Rate Limiter", () => probeRateLimiter(deps))
   ];
 
   return {

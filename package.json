@@ -5,7 +5,7 @@
   "description": "KHAN OS modular personal AI orchestration platform",
   "scripts": {
     "build": "tsc --noEmit && tsc --noEmit -p apps/web",
-    "test": "node --experimental-eventsource --import tsx --test \"tests/**/*.test.ts\"",
+    "test": "node --env-file=tests/test.env --experimental-eventsource --import tsx --test \"tests/**/*.test.ts\"",
     "demo": "node --import tsx apps/cli/src/index.ts",
     "web": "node --import tsx apps/web/src/server.ts",
     "api": "node --import tsx apps/api/src/index.ts",

@@ -20,6 +20,13 @@ import {
   TaskNotFoundError
 } from "../../../services/orchestrator/src/orchestrator";
 import { AuditLog, DEFAULT_PAGE_LIMIT, FileAuditSink, MAX_PAGE_LIMIT, type AuditQuery } from "../../../services/audit/src/index";
+import {
+  RateLimiter,
+  classify,
+  rateLimitsFromEnv,
+  type RateDecision,
+  type RateLimitConfig
+} from "../../../services/rate-limit/src/index";
 import { collectStatus } from "../../../services/status/src/index";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
@@ -37,8 +44,12 @@ export interface KhanApiServerOptions {
   heartbeatMs?: number;
   /** How long a browser waits before reconnecting a dropped event stream. */
   retryMs?: number;
-  /** Clock in ms, used for uptime. Injectable so tests need no real waiting. */
+  /**
+   * Clock in ms, used for uptime and the rate limiter. Injectable so tests need no real waiting.
+   */
   clock?: () => number;
+  /** Requests per minute per client. Defaults to the KHAN_RATE_LIMIT_* environment variables; 0 turns a limit off. */
+  rateLimits?: RateLimitConfig;
 }
 
 const SERVICE_NAME = "khan-os-api";
@@ -59,7 +70,28 @@ function corsOriginsFromEnv(): string[] {
 
 function corsHeaders(origin: string | undefined, allowed: ReadonlySet<string>): Record<string, string> {
   if (!origin || !allowed.has(origin)) return {};
-  return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+  return {
+    "Access-Control-Allow-Origin": origin,
+    // Without this a browser page cannot read the rate limit headers.
+    "Access-Control-Expose-Headers": "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After",
+    Vary: "Origin"
+  };
+}
+
+/** The caller's address. Only the socket is trusted: X-Forwarded-For can be set by anyone. */
+function clientIp(req: IncomingMessage): string {
+  const raw = req.socket.remoteAddress ?? "unknown";
+  return raw.startsWith("::ffff:") ? raw.slice("::ffff:".length) : raw;
+}
+
+/** X-RateLimit-Reset is when the bucket will be full again, in whole Unix seconds. Retry-After is in seconds too. */
+function rateHeaders(decision: RateDecision): Record<string, string> {
+  return {
+    "X-RateLimit-Limit": String(decision.limit),
+    "X-RateLimit-Remaining": String(decision.remaining),
+    "X-RateLimit-Reset": String(Math.ceil(decision.resetAtMs / 1000)),
+    ...(decision.limited ? { "Retry-After": String(Math.max(1, Math.ceil(decision.retryAfterMs / 1000))) } : {})
+  };
 }
 
 class HttpError extends Error {
@@ -387,12 +419,14 @@ export function createKhanApiServer(
     corsOrigins = corsOriginsFromEnv(),
     heartbeatMs = DEFAULT_HEARTBEAT_MS,
     retryMs = SSE_RETRY_MS,
-    clock = Date.now
+    clock = Date.now,
+    rateLimits = rateLimitsFromEnv()
   }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
   const version = readVersion();
   const startedAt = clock();
+  const limiter = new RateLimiter(rateLimits, clock);
   const status = () =>
     collectStatus({
       service: SERVICE_NAME,
@@ -401,27 +435,56 @@ export function createKhanApiServer(
       now: clock,
       diagnostics: () => orchestrator.diagnostics(),
       planAgents: PLAN_AGENTS,
-      verify: verifyIndependentQa
+      verify: verifyIndependentQa,
+      rateLimiter: limiter
     });
+
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     const cors = corsHeaders(req.headers.origin, allowedOrigins);
     if (req.method === "OPTIONS") {
+      // A preflight carries no credentials and takes no token.
       const preflight = Object.keys(cors).length
-        ? { ...cors, "Access-Control-Allow-Methods": "GET, POST", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "600" }
+        ? {
+            ...cors,
+            "Access-Control-Allow-Methods": "GET, POST",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Max-Age": "600"
+          }
         : {};
       res.writeHead(204, preflight);
       res.end();
       return;
     }
 
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      send(res, 400, { error: "invalid_url" }, cors);
+      return;
+    }
+
+    // Every response, errors included, carries the limit headers of the bucket it was counted against.
+    const headers: Record<string, string> = { ...cors };
+    const rateClass = classify(req.method ?? "GET", url.pathname);
+    // The per-client limit comes first, so requests that will be refused anyway (unknown paths, bad input) still cost a token.
+    const byClient = limiter.check(rateClass, `ip:${clientIp(req)}`);
+    if (byClient) {
+      Object.assign(headers, rateHeaders(byClient));
+      if (byClient.limited) {
+        send(res, 429, { error: "rate_limited", retryAfterMs: byClient.retryAfterMs }, headers);
+        return;
+      }
+    }
+
     route(orchestrator, req, status).then(
       (result) => {
-        if ("kind" in result) streamTaskEvents(orchestrator, res, result, cors, heartbeatMs, retryMs);
-        else send(res, result[0], result[1], cors);
+        if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
+        else send(res, result[0], result[1], headers);
       },
       (error: unknown) => {
-        const { status, body, headers } = toError(error);
-        send(res, status, body, { ...cors, ...headers });
+        const { status, body, headers: errorHeaders } = toError(error);
+        send(res, status, body, { ...headers, ...errorHeaders });
       }
     );
   });

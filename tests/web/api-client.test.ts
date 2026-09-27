@@ -7,6 +7,28 @@ import { KhanOrchestrator } from "../../services/orchestrator/src/orchestrator";
 
 const GITHUB_GOAL = "Implement the fix and push the changes to GitHub.";
 
+test("web api client turns a real 429 into an error that says how long to wait", async () => {
+  const server = createKhanApiServer(new KhanOrchestrator(), { rateLimits: { tasks: 1, read: 0, audit: 0 } });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  const client = createApiClient(`http://127.0.0.1:${port}`);
+  try {
+    await client.createTask({ goal: GITHUB_GOAL });
+
+    await assert.rejects(client.createTask({ goal: GITHUB_GOAL }), (error: unknown) => {
+      assert.ok(error instanceof ApiRequestError);
+      assert.equal(error.status, 429);
+      assert.equal(error.code, "rate_limited");
+      assert.ok(error.retryAfterMs !== undefined && error.retryAfterMs > 59_000 && error.retryAfterMs <= 60_000, `retryAfterMs ${error.retryAfterMs}`);
+      assert.match(error.message, /rate_limited: too many requests, try again in 60s/);
+      return true;
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
 test("web api client drives the full task loop against the real API", async () => {
   const orchestrator = new KhanOrchestrator();
   const server = createKhanApiServer(orchestrator);
@@ -28,7 +50,7 @@ test("web api client drives the full task loop against the real API", async () =
 
     const status = await client.getStatus();
     assert.equal(status.status, "ok");
-    assert.deepEqual(status.components.map((component) => component.state), ["up", "not_configured", "up", "up", "up", "not_configured"]);
+    assert.deepEqual(status.components.map((component) => component.state), ["up", "not_configured", "up", "up", "up", "not_configured", "not_configured"]);
 
     const approvedId = await createPausedTask();
     const approved = await client.approveTask(approvedId);

@@ -4,7 +4,8 @@ import { PLAN_AGENTS, createPlan } from "../../agents/planner/src/index";
 import { verifyIndependentQa } from "../../agents/qa/src/index";
 import type { PermissionDecision } from "../../services/permissions/src/index";
 import { KhanOrchestrator, type OrchestratorDiagnostics } from "../../services/orchestrator/src/orchestrator";
-import { collectStatus, type StatusDependencies } from "../../services/status/src/index";
+import { collectStatus, type RateLimiterProbe, type StatusDependencies } from "../../services/status/src/index";
+import { DEFAULT_RATE_LIMITS, RateLimiter } from "../../services/rate-limit/src/index";
 import type { ComponentId, ComponentState, StatusResponse } from "../../packages/contracts/src/api";
 import { gatedHandler } from "../support/orchestration";
 
@@ -19,6 +20,7 @@ function depsFor(orchestrator: KhanOrchestrator, overrides: Partial<StatusDepend
     diagnostics: () => orchestrator.diagnostics(),
     planAgents: PLAN_AGENTS,
     verify: verifyIndependentQa,
+    rateLimiter: new RateLimiter(DEFAULT_RATE_LIMITS),
     ...overrides
   };
 }
@@ -38,14 +40,15 @@ test("a healthy system reports four components up; the model router and an in-me
   const status = collectStatus(depsFor(new KhanOrchestrator()));
 
   assert.equal(status.status, "ok");
-  assert.deepEqual(status.components.map((entry) => entry.id), ["orchestrator", "model-router", "agents", "permissions", "qa", "audit"]);
+  assert.deepEqual(status.components.map((entry) => entry.id), ["orchestrator", "model-router", "agents", "permissions", "qa", "audit", "rate-limiter"]);
   assert.deepEqual(states(status), {
     orchestrator: "up",
     "model-router": "not_configured",
     agents: "up",
     permissions: "up",
     qa: "up",
-    audit: "not_configured"
+    audit: "not_configured",
+    "rate-limiter": "up"
   });
   assert.equal(status.service, "test-service");
   assert.equal(status.version, "1.2.3");
@@ -175,7 +178,8 @@ test("a crashing diagnostics call takes down only what depends on it, and never 
     agents: "down",
     permissions: "down",
     qa: "up",
-    audit: "down"
+    audit: "down",
+    "rate-limiter": "up"
   });
   assert.equal(component(status, "orchestrator").detail, "Self-test crashed: store unavailable");
 });
@@ -240,6 +244,49 @@ test("the audit component is down when the hash chain is broken, even if the dis
   assert.equal(component(status, "audit").state, "down");
   assert.equal(component(status, "audit").detail, "Hash chain broken at entry 4: its contents do not match its recorded hash (it was altered).");
   assert.equal(status.status, "degraded");
+});
+
+test("the rate limiter component reports its configuration and how much it has refused", () => {
+  const orchestrator = new KhanOrchestrator();
+  const limiter = new RateLimiter({ tasks: 2, read: 60, audit: 0 });
+  limiter.check("tasks", "a");
+  limiter.check("tasks", "a");
+  limiter.check("tasks", "a"); // refused
+
+  const status = collectStatus(depsFor(orchestrator, { rateLimiter: limiter }));
+
+  assert.equal(component(status, "rate-limiter").state, "up");
+  assert.equal(
+    component(status, "rate-limiter").detail,
+    "Per client: task creation 2/min, other requests 60/min, audit reads off. 1 client bucket tracked, 1 request refused so far."
+  );
+  assert.deepEqual(component(status, "rate-limiter").metrics, { tasksPerMinute: 2, readPerMinute: 60, auditPerMinute: 0, tracked: 1, limitedTotal: 1 });
+  assert.equal(status.status, "ok");
+});
+
+test("the rate limiter is not configured when every limit is off, and down when its self-test fails", () => {
+  const orchestrator = new KhanOrchestrator();
+  const off = collectStatus(depsFor(orchestrator, { rateLimiter: new RateLimiter({ tasks: 0, read: 0, audit: 0 }) }));
+  assert.equal(component(off, "rate-limiter").state, "not_configured");
+  assert.equal(component(off, "rate-limiter").detail, "Rate limiting is off: every limit is 0.");
+  assert.equal(off.status, "ok", "not configured does not degrade the system");
+
+  const broken: RateLimiterProbe = {
+    describe: () => ({ limits: DEFAULT_RATE_LIMITS, tracked: 0, limitedTotal: 0 }),
+    selfTest: () => ["a request over the limit was not refused with the right wait"]
+  };
+  const down = collectStatus(depsFor(orchestrator, { rateLimiter: broken }));
+  assert.equal(component(down, "rate-limiter").state, "down");
+  assert.match(component(down, "rate-limiter").detail, /^Self-test failed: a request over the limit was not refused/);
+  assert.equal(down.status, "degraded");
+
+  const crashing: RateLimiterProbe = {
+    describe: () => {
+      throw new Error("bucket table corrupt");
+    },
+    selfTest: () => []
+  };
+  assert.equal(component(collectStatus(depsFor(orchestrator, { rateLimiter: crashing })), "rate-limiter").detail, "Self-test crashed: bucket table corrupt");
 });
 
 test("uptime is formatted for humans and never negative", () => {

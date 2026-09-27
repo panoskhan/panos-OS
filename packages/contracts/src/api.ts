@@ -82,9 +82,11 @@ export interface TaskEventsResponse {
 export interface ApiError {
   error: string;
   detail?: string;
+  /** Only on 429 rate_limited: how long to wait before trying again. */
+  retryAfterMs?: number;
 }
 
-export type ComponentId = "orchestrator" | "model-router" | "agents" | "permissions" | "qa" | "audit";
+export type ComponentId = "orchestrator" | "model-router" | "agents" | "permissions" | "qa" | "audit" | "rate-limiter";
 
 /**
  * up             the component's self-test passed

@@ -78,6 +78,9 @@ export class TaskSync {
 
   private running: Promise<void> | null = null;
   private rerun: Promise<void> | null = null;
+  /** While the API is rate limiting us, no read is sent until this time (epoch ms). */
+  private pausedUntil = 0;
+  private resumeTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly options: TaskSyncOptions) {
     this.latest = options.initialReport;
@@ -112,6 +115,7 @@ export class TaskSync {
     this.source?.close();
     this.source = undefined;
     this.stopPolling();
+    clearTimeout(this.resumeTimer);
   }
 
   /**
@@ -119,7 +123,7 @@ export class TaskSync {
    * events causes at most two reads. The returned promise settles after a read that started after this call.
    */
   refresh(): Promise<void> {
-    if (this.stopped) return Promise.resolve();
+    if (this.stopped || this.isPaused()) return Promise.resolve();
     if (!this.running) {
       const read: Promise<void> = this.readReport().finally(() => {
         if (this.running === read) this.running = null;
@@ -217,6 +221,7 @@ export class TaskSync {
   }
 
   private async readEvents(): Promise<void> {
+    if (this.isPaused()) return;
     try {
       const { events } = await this.options.client.getTaskEvents(this.options.taskId);
       if (!this.stopped) this.ingest(events);
@@ -233,7 +238,29 @@ export class TaskSync {
       this.options.onError(TASK_GONE_MESSAGE);
       return;
     }
+    if (error instanceof ApiRequestError && error.status === 429) {
+      this.backOff(error.retryAfterMs ?? 1000);
+      return;
+    }
     this.options.onError(error instanceof Error ? error.message : String(error));
+  }
+
+  private isPaused(): boolean {
+    return Date.now() < this.pausedUntil;
+  }
+
+  /**
+   * The API is rate limiting us. Send nothing until it says we may, then read once to catch up. Step events that
+   * arrive over the stream meanwhile still show on screen (they need no request).
+   */
+  private backOff(retryAfterMs: number): void {
+    this.pausedUntil = Date.now() + retryAfterMs;
+    this.options.onError(`The API is rate limiting requests. Retrying in ${Math.ceil(retryAfterMs / 1000)}s.`);
+    clearTimeout(this.resumeTimer);
+    this.resumeTimer = setTimeout(() => {
+      this.resumeTimer = undefined;
+      if (!this.stopped) void this.refresh();
+    }, retryAfterMs);
   }
 
   private startPolling(): void {

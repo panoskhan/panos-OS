@@ -34,7 +34,8 @@ const COMPONENT_NAMES: Array<[ComponentId, string]> = [
   ["agents", "Agents"],
   ["permissions", "Permissions"],
   ["qa", "Independent QA"],
-  ["audit", "Audit Log"]
+  ["audit", "Audit Log"],
+  ["rate-limiter", "Rate Limiter"]
 ];
 
 const AVATAR_TONE: Record<AvatarState, string> = {

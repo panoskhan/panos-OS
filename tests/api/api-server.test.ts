@@ -219,7 +219,7 @@ test("api allows CORS only for configured browser origins", async () => {
     assert.equal(preflight.status, 204);
     assert.equal(preflight.headers.get("access-control-allow-origin"), allowed);
     assert.equal(preflight.headers.get("access-control-allow-methods"), "GET, POST");
-    assert.equal(preflight.headers.get("access-control-allow-headers"), "Content-Type");
+    assert.equal(preflight.headers.get("access-control-allow-headers"), "Content-Type, Authorization");
 
     const health = await fetch(`${base}/health`, { headers: { origin: allowed } });
     assert.equal(health.headers.get("access-control-allow-origin"), allowed);

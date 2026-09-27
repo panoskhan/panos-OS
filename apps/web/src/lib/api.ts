@@ -27,7 +27,9 @@ export class ApiRequestError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
-    readonly detail?: string
+    readonly detail?: string,
+    /** Only for 429: how long the API asked us to wait. */
+    readonly retryAfterMs?: number
   ) {
     super(detail ? `${code}: ${detail}` : code);
     this.name = "ApiRequestError";
@@ -63,6 +65,11 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL): KhanApiClien
     const payload: unknown = await response.json().catch(() => null);
     if (!response.ok) {
       const error = payload as Partial<ApiError> | null;
+      if (response.status === 429) {
+        const headerSeconds = Number(response.headers.get("retry-after"));
+        const retryAfterMs = error?.retryAfterMs ?? (Number.isFinite(headerSeconds) && headerSeconds > 0 ? headerSeconds * 1000 : 1000);
+        throw new ApiRequestError(429, "rate_limited", `too many requests, try again in ${Math.ceil(retryAfterMs / 1000)}s`, retryAfterMs);
+      }
       throw new ApiRequestError(response.status, error?.error ?? `http_${response.status}`, error?.detail);
     }
     return payload as T;
