@@ -3,6 +3,7 @@ import type {
   ApiError,
   CreateTaskRequest,
   HealthResponse,
+  StatusResponse,
   TaskEventsResponse,
   TaskResponse
 } from "../../../../packages/contracts/src/api";
@@ -23,6 +24,8 @@ export class ApiRequestError extends Error {
 export interface KhanApiClient {
   readonly baseUrl: string;
   health(): Promise<HealthResponse>;
+  /** Self-test results for the system's components (GET /v1/status). */
+  getStatus(): Promise<StatusResponse>;
   createTask(request: CreateTaskRequest): Promise<TaskResponse>;
   getTask(taskId: string): Promise<TaskResponse>;
   approveTask(taskId: string): Promise<TaskResponse>;
@@ -56,6 +59,7 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL): KhanApiClien
   return {
     baseUrl: root,
     health: () => request<HealthResponse>("GET", "/health"),
+    getStatus: () => request<StatusResponse>("GET", "/v1/status"),
     createTask: (body) => request<TaskResponse>("POST", "/v1/tasks", body),
     getTask: (taskId) => request<TaskResponse>("GET", taskPath(taskId)),
     approveTask: (taskId) => request<TaskResponse>("POST", `${taskPath(taskId)}/approve`),

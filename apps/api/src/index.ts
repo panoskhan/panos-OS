@@ -1,18 +1,24 @@
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { join } from "node:path";
 import type {
   ApiError,
   CreateTaskRequest,
   HealthResponse,
+  StatusResponse,
   TaskEvent,
   TaskEventsResponse,
   TaskResponse
 } from "../../../packages/contracts/src/api";
 import type { TaskStatus } from "../../../packages/contracts/src/task";
+import { PLAN_AGENTS } from "../../../agents/planner/src/index";
+import { verifyIndependentQa } from "../../../agents/qa/src/index";
 import {
   InvalidTaskStateError,
   KhanOrchestrator,
   TaskNotFoundError
 } from "../../../services/orchestrator/src/orchestrator";
+import { collectStatus } from "../../../services/status/src/index";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -29,6 +35,19 @@ export interface KhanApiServerOptions {
   heartbeatMs?: number;
   /** How long a browser waits before reconnecting a dropped event stream. */
   retryMs?: number;
+  /** Clock in ms, used for uptime. Injectable so tests need no real waiting. */
+  clock?: () => number;
+}
+
+const SERVICE_NAME = "khan-os-api";
+
+function readVersion(): string {
+  try {
+    const raw = readFileSync(join(__dirname, "../../../package.json"), "utf8");
+    return (JSON.parse(raw) as { version?: string }).version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 function corsOriginsFromEnv(): string[] {
@@ -59,7 +78,9 @@ interface EventStreamRequest {
   afterSeq: number;
 }
 
-type RouteResult = [status: number, payload: HealthResponse | TaskResponse | TaskEventsResponse] | EventStreamRequest;
+type RouteResult =
+  | [status: number, payload: HealthResponse | StatusResponse | TaskResponse | TaskEventsResponse]
+  | EventStreamRequest;
 
 function send(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string> = {}) {
   const body = JSON.stringify(payload);
@@ -199,13 +220,22 @@ function streamTaskEvents(
   if (TERMINAL_STATUSES.has(orchestrator.get(taskId).task.status)) end();
 }
 
-async function route(orchestrator: KhanOrchestrator, req: IncomingMessage): Promise<RouteResult> {
+async function route(
+  orchestrator: KhanOrchestrator,
+  req: IncomingMessage,
+  status: () => StatusResponse
+): Promise<RouteResult> {
   const method = req.method ?? "GET";
   const { pathname } = new URL(req.url ?? "/", "http://localhost");
 
   if (pathname === "/health") {
     if (method !== "GET") throw methodNotAllowed(["GET"]);
-    return [200, { status: "ok", service: "khan-os-api" }];
+    return [200, { status: "ok", service: SERVICE_NAME }];
+  }
+
+  if (pathname === "/v1/status") {
+    if (method !== "GET") throw methodNotAllowed(["GET"]);
+    return [200, status()]; // always 200: a failing component shows as "degraded" in the body
   }
 
   if (pathname === "/v1/tasks") {
@@ -261,9 +291,26 @@ function toError(error: unknown): { status: number; body: ApiError; headers?: Re
 
 export function createKhanApiServer(
   orchestrator = new KhanOrchestrator(),
-  { corsOrigins = corsOriginsFromEnv(), heartbeatMs = DEFAULT_HEARTBEAT_MS, retryMs = SSE_RETRY_MS }: KhanApiServerOptions = {}
+  {
+    corsOrigins = corsOriginsFromEnv(),
+    heartbeatMs = DEFAULT_HEARTBEAT_MS,
+    retryMs = SSE_RETRY_MS,
+    clock = Date.now
+  }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
+  const version = readVersion();
+  const startedAt = clock();
+  const status = () =>
+    collectStatus({
+      service: SERVICE_NAME,
+      version,
+      startedAt,
+      now: clock,
+      diagnostics: () => orchestrator.diagnostics(),
+      planAgents: PLAN_AGENTS,
+      verify: verifyIndependentQa
+    });
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     const cors = corsHeaders(req.headers.origin, allowedOrigins);
     if (req.method === "OPTIONS") {
@@ -275,7 +322,7 @@ export function createKhanApiServer(
       return;
     }
 
-    route(orchestrator, req).then(
+    route(orchestrator, req, status).then(
       (result) => {
         if ("kind" in result) streamTaskEvents(orchestrator, res, result, cors, heartbeatMs, retryMs);
         else send(res, result[0], result[1], cors);

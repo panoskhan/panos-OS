@@ -23,6 +23,15 @@ export class AgentRuntime {
 
   constructor(private readonly permissions = new PermissionEngine()) {}
 
+  /** The permission engine this runtime enforces (read-only, so it can be health-checked). */
+  get permissionEngine(): PermissionEngine {
+    return this.permissions;
+  }
+
+  registeredAgents(): string[] {
+    return [...this.handlers.keys()];
+  }
+
   register(agentId: string, handler: AgentHandler): void {
     if (!agentId.trim()) throw new Error("Agent ID is required");
     if (this.handlers.has(agentId)) throw new Error(`Agent already registered: ${agentId}`);
