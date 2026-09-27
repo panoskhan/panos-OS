@@ -160,6 +160,7 @@ uses it yet, which never counts as degraded).
 | `KHAN_AUDIT_FILE` | Audit log path | `data/audit.jsonl` |
 | `KHAN_TASKS_FILE` | Where tasks are kept between restarts | `data/tasks.json` |
 | `NVIDIA_API_KEY` | Key for the model endpoint. Put it in `.env` (git-ignored, see `.env.example`), never in chat or in code. Unset means agent steps are stubs | unset |
+| `KHAN_WORKSPACE` / `KHAN_WORKSPACE_DIR` | `off` disables the sandboxed workspace; where workspaces are created | on / `data/workspaces` |
 | `KHAN_MODEL` / `KHAN_MODEL_BASE_URL` / `KHAN_MODEL_TIMEOUT_MS` | Model, OpenAI-compatible endpoint, and per-call timeout | `google/gemma-4-31b-it` / `https://integrate.api.nvidia.com/v1` / `180000` |
 | `KHAN_STUB_STEP_DELAY_MS` | **Stub timing only:** makes the stub agents wait per step so progress is visible in demos | `0` |
 | `VITE_API_URL` | API address the web app calls | `http://127.0.0.1:3001` |
@@ -175,6 +176,7 @@ uses it yet, which never counts as degraded).
 - `services/agents`: the agent runtime (permission check, then the handler).
 - `services/permissions`: the permission policy and engine.
 - `services/status`, `services/audit`, `services/rate-limit`, `services/auth`: the four pieces described above.
+- `services/workspace`: the per-task sandbox (path guard, allow-listed commands, scrubbed environment).
 - `services/model-router`: `client.ts` is the real model client (OpenAI-compatible chat, timeouts, typed errors, health);
   `router.ts` is an unused capability-routing function, kept for when more than one model exists.
 - `agents/`: planner, coding and QA agents. With a key, the coding agent is backed by the model
@@ -187,9 +189,17 @@ long-term data direction (PostgreSQL, pgvector, Redis) is in `docs/ARCHITECTURE.
 
 ## Known limitations
 
-- **Without a key the agents are stubs; with one they only propose.** The model-backed coding agent reasons about each
-  step and its first finding says "no files were changed and no tests were run". Nothing writes files, runs tests or
-  touches GitHub; approving a "push to GitHub" task only marks the step done.
+- **Without a key the agents are stubs; with one the coding agent works in a sandbox.** Each task gets its own copy of
+  the project under `data/workspaces/<task id>` (no `.env`, `.git`, `data` or `node_modules`). The model can list,
+  read and edit files there (editing only in steps that have `workspace.write`) and run two fixed commands, `test` and
+  `build`, with an environment that has no API keys. Findings start with facts the server measured itself (files read
+  and written, command results); the model's own claims are labelled `Model:`. A failing `test` step fails the task.
+  **The real project is never changed, and there is no "apply these changes" step yet:** you review the sandbox copy
+  yourself. Nothing touches GitHub; approving a "push to GitHub" task only marks the step done. Set
+  `KHAN_WORKSPACE=off` for text-only analysis.
+- **Model quality varies.** The agent needs a model that answers with strict JSON. `nvidia/nemotron-3-super-120b-a12b`
+  does; `openai/gpt-oss-20b` often leaves its answer in a hidden reasoning field, and `google/gemma-4-31b-it` was too
+  slow (minutes). A model that keeps failing makes the step fail with its last reply in the error.
 - **Tasks are kept in `data/tasks.json`,** rewritten whole after every event (fine for one local server, not for
   thousands of tasks). A task that was mid-execution when the server stopped is marked failed ("interrupted"); one
   waiting for approval can still be approved after a restart. There is no cleanup of old tasks.
