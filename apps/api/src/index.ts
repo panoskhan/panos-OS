@@ -565,7 +565,8 @@ if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
   );
   if (model) {
     // One real, tiny call at startup, so the Model Router's status reflects a real answer rather than a guess.
-    model.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 8 }).then(
+    // Room for a reasoning model to think before it answers: with 8 tokens it returns an empty message and the check fails.
+    model.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 256 }).then(
       () => console.log(`Model: ${model.model} answered the startup check.`),
       (error: unknown) => console.error(`Model: startup check failed: ${error instanceof Error ? error.message : String(error)}`)
     );
