@@ -32,6 +32,8 @@ import {
 import { collectStatus } from "../../../services/status/src/index";
 import { ModelClient, modelConfigFromEnv, type ModelConfig, type ModelHealth } from "../../../services/model-router/src/client";
 import { createModelCodingHandler } from "../../../agents/coding/src/model-handler";
+import { createWorkspaceCodingHandler } from "../../../agents/coding/src/workspace-handler";
+import { WorkspaceManager } from "../../../services/workspace/src/index";
 import { TaskStore } from "../../../services/orchestrator/src/task-store";
 import { FileTaskPersistence } from "../../../services/orchestrator/src/task-persistence";
 
@@ -556,10 +558,16 @@ if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
     console.error(`Cannot start: could not read the task file ${tasksFile}: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
+  // With a model the coding agent works in a sandbox copy of this project (set KHAN_WORKSPACE=off for text-only analysis).
+  const useWorkspace = model && process.env.KHAN_WORKSPACE?.trim().toLowerCase() !== "off";
+  const workspaces = new WorkspaceManager({
+    source: process.cwd(),
+    base: process.env.KHAN_WORKSPACE_DIR ?? join(process.cwd(), "data", "workspaces")
+  });
   const orchestrator = new KhanOrchestrator(
     undefined,
     undefined,
-    model ? createModelCodingHandler(model) : undefined,
+    model ? (useWorkspace ? createWorkspaceCodingHandler(model, workspaces) : createModelCodingHandler(model)) : undefined,
     store,
     audit
   );
@@ -572,7 +580,13 @@ if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
     );
   }
   createKhanApiServer(orchestrator, { auth, model }).listen(PORT, "127.0.0.1", () => {
-    console.log(model ? `Model: ${model.model} (real agent steps; the coding agent proposes but changes no files)` : "Model: none (NVIDIA_API_KEY is not set): agent steps are stubs.");
+    console.log(
+      !model
+        ? "Model: none (NVIDIA_API_KEY is not set): agent steps are stubs."
+        : useWorkspace
+          ? `Model: ${model.model}. The coding agent works in sandbox copies under ${workspaces.base}; the real project is never changed.`
+          : `Model: ${model.model} (text-only: the coding agent proposes but changes no files)`
+    );
     const health = audit.health();
     console.log(`KHAN OS API: http://127.0.0.1:${PORT}`);
     console.log(`Tasks: ${tasksFile} (${store.all().length} loaded)`);

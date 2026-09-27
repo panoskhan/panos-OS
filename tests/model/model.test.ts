@@ -44,7 +44,8 @@ const answer = (text: string) => (_req: IncomingMessage, res: ServerResponse) =>
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: text } }] }));
 };
-const clientFor = (baseUrl: string, timeoutMs = 5000) => new ModelClient({ apiKey: KEY, baseUrl, model: "test/model", timeoutMs });
+// No retries by default, so tests that expect a failure do not wait through the real backoff.
+const clientFor = (baseUrl: string, timeoutMs = 5000) => new ModelClient({ apiKey: KEY, baseUrl, model: "test/model", timeoutMs }, Date.now, []);
 
 test("no key means no model; the defaults point at NVIDIA and gemma", () => {
   assert.equal(modelConfigFromEnv({}), null);
@@ -100,6 +101,40 @@ test("failures are typed, honest, and never contain the key", async () => {
     } finally {
       await fake.close();
     }
+  }
+});
+
+test("a briefly overloaded endpoint is retried, a permanent error is not, and running out of retries fails honestly", async () => {
+  const withRetries = (baseUrl: string, delays: number[]) => new ModelClient({ apiKey: KEY, baseUrl, model: "test/model", timeoutMs: 5000 }, Date.now, delays);
+  const messages = [{ role: "user" as const, content: "x" }];
+
+  let hits = 0;
+  const flaky = await fakeModel((req, res) => (++hits < 3 ? (res.writeHead(503), res.end("overloaded")) : answer("finally")(req, res)));
+  try {
+    assert.equal((await withRetries(flaky.baseUrl, [1, 1]).chat(messages)).text, "finally");
+    assert.equal(hits, 3, "two temporary failures, then success");
+  } finally {
+    await flaky.close();
+  }
+
+  hits = 0;
+  const forbidden = await fakeModel((_q, res) => (hits++, res.writeHead(401), res.end("no")));
+  try {
+    await assert.rejects(withRetries(forbidden.baseUrl, [1, 1]).chat(messages), /HTTP 401/);
+    assert.equal(hits, 1, "a wrong key is not retried");
+  } finally {
+    await forbidden.close();
+  }
+
+  hits = 0;
+  const down = await fakeModel((_q, res) => (hits++, res.writeHead(503), res.end("overloaded")));
+  try {
+    const client = withRetries(down.baseUrl, [1, 1]);
+    await assert.rejects(client.chat(messages), /HTTP 503/);
+    assert.equal(hits, 3, "the first try and two retries");
+    assert.deepEqual([client.health().calls, client.health().failures], [1, 1], "one chat call is one call, however many tries it took");
+  } finally {
+    await down.close();
   }
 });
 

@@ -3,6 +3,9 @@ export const DEFAULT_MODEL_BASE_URL = "https://integrate.api.nvidia.com/v1";
 // The hosted 31B model answered a trivial question in ~112s on a cold start, so anything shorter fails real calls.
 export const DEFAULT_MODEL_TIMEOUT_MS = 180_000;
 
+const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
+export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [1_000, 4_000];
+
 export interface ModelConfig {
   apiKey: string;
   baseUrl: string;
@@ -90,7 +93,9 @@ export class ModelClient {
 
   constructor(
     private readonly config: ModelConfig,
-    private readonly clock: () => number = Date.now
+    private readonly clock: () => number = Date.now,
+    /** Waits before each retry of a temporary failure (429, 502, 503, 504). Empty means no retries. */
+    private readonly retryDelaysMs: readonly number[] = DEFAULT_RETRY_DELAYS_MS
   ) {}
 
   get model(): string {
@@ -111,13 +116,26 @@ export class ModelClient {
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<ChatResult> {
     this.calls += 1;
     try {
-      const result = await this.request(messages, options);
+      const result = await this.requestWithRetries(messages, options);
       this.lastSuccessAt = new Date(this.clock()).toISOString();
       return result;
     } catch (error) {
       this.failures += 1;
       this.lastFailure = { at: new Date(this.clock()).toISOString(), message: error instanceof Error ? error.message : String(error) };
       throw error;
+    }
+  }
+
+  /** A busy or briefly unavailable endpoint is retried a couple of times; anything else fails at once. */
+  private async requestWithRetries(messages: ChatMessage[], options: ChatOptions): Promise<ChatResult> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.request(messages, options);
+      } catch (error) {
+        const temporary = error instanceof ModelError && error.httpStatus !== undefined && RETRYABLE_STATUSES.has(error.httpStatus);
+        if (!temporary || attempt >= this.retryDelaysMs.length) throw error;
+        await new Promise((resolve) => setTimeout(resolve, this.retryDelaysMs[attempt]));
+      }
     }
   }
 
