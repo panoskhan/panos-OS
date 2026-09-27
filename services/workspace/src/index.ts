@@ -92,7 +92,8 @@ export class Workspace {
     if (!statSync(full, { throwIfNoEntry: false })?.isFile()) throw new WorkspaceError(`Not a file: ${String(path)}`);
     const bytes = readFileSync(full);
     const truncated = bytes.length > MAX_READ_BYTES;
-    return { content: bytes.subarray(0, MAX_READ_BYTES).toString("utf8"), truncated };
+    // Shown with "\n" line endings whatever the file uses, so what the model copies back into an edit matches (see `edit`).
+    return { content: bytes.subarray(0, MAX_READ_BYTES).toString("utf8").replace(/\r\n/g, "\n"), truncated };
   }
 
   /** Writes (or replaces) a text file, creating folders as needed. Returns the size written. */
@@ -105,6 +106,31 @@ export class Workspace {
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, content);
     return bytes;
+  }
+
+  /** Replaces one exact piece of text in a file. The text must occur exactly once, so an edit can never land in the wrong place. */
+  edit(path: unknown, find: unknown, replacement: unknown): number {
+    if (typeof find !== "string" || !find) throw new WorkspaceError("find must be the exact, non-empty text to replace");
+    if (typeof replacement !== "string") throw new WorkspaceError("replace must be text");
+    const full = this.resolve(path);
+    if (!statSync(full, { throwIfNoEntry: false })?.isFile()) throw new WorkspaceError(`Not a file: ${String(path)}`);
+
+    const original = readFileSync(full, "utf8");
+    // The model sees and writes "\n". A file that uses Windows line endings is matched, and edited, in its own style.
+    const crlf = original.includes("\r\n");
+    const toFileStyle = (text: string) => (crlf ? text.replace(/\r?\n/g, "\r\n") : text);
+    const target = toFileStyle(find);
+    const insert = toFileStyle(replacement);
+    const occurrences = original.split(target).length - 1;
+    if (occurrences !== 1) {
+      throw new WorkspaceError(
+        occurrences === 0
+          ? `The text to replace was not found in ${String(path)}. It must match exactly, including whitespace.`
+          : `The text to replace occurs ${occurrences} times in ${String(path)}. Include more surrounding text so it is unique.`
+      );
+    }
+    const updated = original.replace(target, () => insert);
+    return this.write(path, updated);
   }
 
   run(name: unknown): Promise<CommandResult> {

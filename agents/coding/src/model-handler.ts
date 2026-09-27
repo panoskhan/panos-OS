@@ -4,7 +4,7 @@ import type { AgentHandler } from "../../../services/agents/src/runtime";
 
 /** The one thing the handler needs from a model client (so tests can hand in a fake). */
 export interface ChatModel {
-  chat(messages: ChatMessage[]): Promise<{ text: string; model: string }>;
+  chat(messages: ChatMessage[], options?: { maxTokens?: number }): Promise<{ text: string; model: string }>;
 }
 
 const MAX_FINDINGS = 8;

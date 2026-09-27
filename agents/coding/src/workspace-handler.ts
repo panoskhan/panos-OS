@@ -9,6 +9,7 @@ export interface WorkspaceProvider {
 }
 
 export const DEFAULT_MAX_TURNS = 12;
+const REPLY_TOKENS = 8_192;
 const MAX_FINDINGS = 8;
 const MAX_FINDING_LENGTH = 400;
 const MAX_TOOL_REPLY = 6_000;
@@ -45,7 +46,8 @@ export function extractJsonObject(text: string): Record<string, unknown> | null 
 const SYSTEM_PROMPT = `You are the coding agent of KHAN OS. You work inside a sandboxed copy of the project. You act by replying with EXACTLY ONE JSON object per message and nothing else. The tools:
 {"tool":"list_dir","path":"."}                      list a folder (folders end with /)
 {"tool":"read_file","path":"src/a.ts"}              read a text file
-{"tool":"write_file","path":"src/a.ts","content":"..."}   create or replace a file with the FULL new content (only when this step allows writing)
+{"tool":"edit_file","path":"src/a.ts","find":"exact old text","replace":"new text"}   replace one exact piece of text that occurs once (only when this step allows writing). Prefer this for changes to existing files.
+{"tool":"write_file","path":"src/a.ts","content":"..."}   create a new file, or replace a small one, with the FULL content (only when this step allows writing)
 {"tool":"run","command":"test"}                     run a fixed command; allowed: test, build
 {"tool":"finish","findings":["short line","short line"]}   end the step with 3 to 6 short factual findings
 Rules: paths are relative to the project root; you cannot reach anything outside it. Look at real files before you claim anything about them, and say only what you actually saw or did. Finish as soon as the step is done.`;
@@ -114,6 +116,11 @@ export function createWorkspaceCodingHandler(
           written.set(String(call.path), workspace.write(call.path, call.content));
           return `Wrote ${String(call.path)}`;
         }
+        case "edit_file": {
+          if (!canWrite) throw new WorkspaceError("Writing is not allowed in this step");
+          written.set(String(call.path), workspace.edit(call.path, call.find, call.replace));
+          return `Edited ${String(call.path)}`;
+        }
         case "run": {
           const result = await workspace.run(call.command);
           commands.push(result);
@@ -125,8 +132,11 @@ export function createWorkspaceCodingHandler(
     };
 
     let finished = false;
+    let lastReply = "";
     for (let turn = 1; turn <= maxTurns && !finished; turn++) {
-      const { text } = await model.chat(messages);
+      // A reply may contain a whole file, and a reply cut off mid-JSON is useless, so leave generous room.
+      const { text } = await model.chat(messages, { maxTokens: REPLY_TOKENS });
+      lastReply = text;
       messages.push({ role: "assistant", content: text });
 
       const call = extractJsonObject(text);
@@ -146,7 +156,12 @@ export function createWorkspaceCodingHandler(
         messages.push({ role: "user", content: `Error: ${error.message}` });
       }
     }
-    if (!finished) throw new Error(`The model did not finish step '${step.id}' within ${maxTurns} turns`);
+    if (!finished) {
+      const used = { read: read.size, written: written.size, ran: commands.length };
+      throw new Error(
+        `The model did not finish step '${step.id}' within ${maxTurns} turns (read ${used.read}, wrote ${used.written}, ran ${used.ran}). Its last reply: ${trim(lastReply.replace(/\s+/g, " "), 200)}`
+      );
+    }
 
     // The test step always ends with a real test run, even if the model forgot to ask for one.
     if (step.id === "test" && !commands.some((command) => command.name === "test")) commands.push(await workspace.run("test"));

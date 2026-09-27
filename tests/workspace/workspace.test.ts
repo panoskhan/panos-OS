@@ -44,10 +44,13 @@ const context = (goal = "Add a greeting", inputs: Record<string, unknown> = {}) 
 /** A model that answers from a script, and remembers what it was asked. */
 function scripted(replies: string[]) {
   const asked: Array<Array<{ role: string; content: string }>> = [];
+  const limits: Array<number | undefined> = [];
   return {
     asked,
-    async chat(messages: Array<{ role: "system" | "user" | "assistant"; content: string }>) {
+    limits,
+    async chat(messages: Array<{ role: "system" | "user" | "assistant"; content: string }>, options?: { maxTokens?: number }) {
       asked.push(structuredClone(messages));
+      limits.push(options?.maxTokens);
       const reply = replies.shift();
       assert.ok(reply !== undefined, "the agent asked the model more often than the script expects");
       return { text: reply, model: "fake/model" };
@@ -113,6 +116,45 @@ test("paths cannot escape: parent folders, absolute paths, secrets, git, depende
     assert.throws(() => workspace.write("ok.txt", 42), WorkspaceError);
     assert.throws(() => workspace.write("big.txt", "x".repeat(100_001)), /too large/);
     assert.equal(readFileSync(outside, "utf8"), "outside");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("edit_file replaces exactly one exact piece of text, and refuses anything ambiguous", () => {
+  const f = fixture();
+  try {
+    const workspace = f.manager().forTask("task_1");
+    workspace.write("src/code.ts", "const a = 1;\nconst b = 2;\nconst b2 = 2;\n");
+
+    workspace.edit("src/code.ts", "const a = 1;", "const a = 100; // $& stays literal");
+    assert.equal(workspace.read("src/code.ts").content, "const a = 100; // $& stays literal\nconst b = 2;\nconst b2 = 2;\n");
+
+    assert.throws(() => workspace.edit("src/code.ts", "nothing like this", "x"), /was not found/);
+    assert.throws(() => workspace.edit("src/code.ts", "const b", "x"), /occurs 2 times/);
+    assert.throws(() => workspace.edit("src/code.ts", "", "x"), /non-empty/);
+    assert.throws(() => workspace.edit("src/code.ts", "const a", 7), /must be text/);
+    assert.throws(() => workspace.edit("src/missing.ts", "a", "b"), /Not a file/);
+    assert.throws(() => workspace.edit(".env", "a", "b"), WorkspaceError);
+    assert.equal(workspace.read("src/code.ts").content.startsWith("const a = 100;"), true, "a refused edit changes nothing");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a file with Windows line endings is shown with \\n, and an edit written with \\n still matches and keeps the file's style", () => {
+  const f = fixture();
+  try {
+    const workspace = f.manager().forTask("task_1");
+    writeFileSync(join(workspace.root, "win.md"), "# Title\r\n\r\nFirst paragraph.\r\nSecond line.\r\n");
+
+    assert.equal(workspace.read("win.md").content, "# Title\n\nFirst paragraph.\nSecond line.\n");
+    workspace.edit("win.md", "# Title\n\nFirst", "# Title\n\nQuick start\n\nFirst");
+    assert.equal(readFileSync(join(workspace.root, "win.md"), "utf8"), "# Title\r\n\r\nQuick start\r\n\r\nFirst paragraph.\r\nSecond line.\r\n");
+
+    writeFileSync(join(workspace.root, "unix.md"), "a\nb\n");
+    workspace.edit("unix.md", "a\nb", "a\nc");
+    assert.equal(readFileSync(join(workspace.root, "unix.md"), "utf8"), "a\nc\n", "a file that uses \\n stays that way");
   } finally {
     f.cleanup();
   }
@@ -195,6 +237,30 @@ test("the agent explores, edits and tests in the sandbox, and reports what the h
     assert.equal(existsSync(join(f.source, "src", "greeting.txt")), false, "nothing reaches the real project");
     const listing = model.asked[1].at(-1)!.content;
     assert.equal(listing, "README.md\nsrc/", "the model was shown the folder without secrets or dependencies");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("the agent edits an existing file with edit_file, and asks the model for room for a whole file", async () => {
+  const f = fixture();
+  try {
+    const model = scripted([
+      call({ tool: "edit_file", path: "README.md", find: "# project", replace: "# project\n\nQuick start: npm run demo" }),
+      call({ tool: "edit_file", path: "README.md", find: "not in the file", replace: "x" }),
+      call({ tool: "finish", findings: ["Added the note"] })
+    ]);
+    const result = await createWorkspaceCodingHandler(model, f.manager())(step("implement", WRITE), context());
+
+    assert.deepEqual(result.artifacts, ["README.md"]);
+    assert.equal(readFileSync(join(f.dir, "workspaces", "task_1", "README.md"), "utf8"), "# project\n\nQuick start: npm run demo");
+    assert.equal(model.asked[1].at(-1)!.content, "Edited README.md");
+    assert.match(model.asked[2].at(-1)!.content, /^Error: The text to replace was not found/, "a bad edit is explained so the model can retry");
+    assert.ok(model.limits.every((limit) => limit !== undefined && limit >= 4096), `reply limits were ${model.limits}`);
+
+    const readOnly = scripted([call({ tool: "edit_file", path: "README.md", find: "# project", replace: "x" }), call({ tool: "finish", findings: ["ok"] })]);
+    await createWorkspaceCodingHandler(readOnly, f.manager())(step("inspect", READ), context());
+    assert.equal(readOnly.asked[1].at(-1)!.content, "Error: Writing is not allowed in this step");
   } finally {
     f.cleanup();
   }
