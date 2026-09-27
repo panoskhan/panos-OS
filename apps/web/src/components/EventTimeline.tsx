@@ -60,14 +60,14 @@ export function EventTimeline({ taskId, refreshKey, client = api }: EventTimelin
   }, [client, taskId, refreshKey]);
 
   return (
-    <section className="panel">
+    <section className="panel" id="activity-log">
       <header className="panel-head">
-        <h2>Event timeline</h2>
+        <h2>Live Agent Activity</h2>
         <span className="muted">{events.length} events</span>
       </header>
       {error && <p className="error-text">{error}</p>}
       {!taskId ? (
-        <p className="empty">The task's event log appears here.</p>
+        <p className="empty">Live agent activity appears here once a task runs.</p>
       ) : (
         <ol className="timeline">
           {events.map((event) => (

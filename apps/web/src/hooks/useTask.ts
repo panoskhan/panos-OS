@@ -11,7 +11,7 @@ export function isTerminal(status: TaskStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-export type TaskAction = "create" | "approve" | "reject";
+export type TaskAction = "create" | "approve" | "reject" | "select";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -87,5 +87,10 @@ export function useTask(client: KhanApiClient = api) {
     [client, run, taskId]
   );
 
-  return { report, error, pending, polling, createTask, approve, reject };
+  const selectTask = useCallback(
+    (id: string) => run("select", () => client.getTask(id)),
+    [client, run]
+  );
+
+  return { report, error, pending, polling, createTask, approve, reject, selectTask };
 }

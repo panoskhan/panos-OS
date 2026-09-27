@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import type { FormEvent } from "react";
 
 const PRESETS = [
   { label: "Analysis", goal: "Analyze this project and identify the next engineering tasks." },
@@ -8,13 +8,13 @@ const PRESETS = [
 ];
 
 interface GoalInputProps {
+  goal: string;
+  onGoalChange: (goal: string) => void;
   onSubmit: (goal: string) => Promise<void>;
   busy: boolean;
 }
 
-export function GoalInput({ onSubmit, busy }: GoalInputProps) {
-  const [goal, setGoal] = useState(PRESETS[0].goal);
-
+export function GoalInput({ goal, onGoalChange, onSubmit, busy }: GoalInputProps) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     const trimmed = goal.trim();
@@ -22,13 +22,13 @@ export function GoalInput({ onSubmit, busy }: GoalInputProps) {
   }
 
   return (
-    <section className="panel">
+    <section className="panel" id="goal-input">
       <form className="goal-row" onSubmit={submit}>
         <label className="sr-only" htmlFor="goal">Goal</label>
         <input
           id="goal"
           value={goal}
-          onChange={(event) => setGoal(event.target.value)}
+          onChange={(event) => onGoalChange(event.target.value)}
           placeholder="Describe what KHAN should do…"
           autoComplete="off"
         />
@@ -43,7 +43,7 @@ export function GoalInput({ onSubmit, busy }: GoalInputProps) {
             type="button"
             className="chip"
             aria-pressed={goal === preset.goal}
-            onClick={() => setGoal(preset.goal)}
+            onClick={() => onGoalChange(preset.goal)}
           >
             {preset.label}
           </button>
@@ -52,3 +52,5 @@ export function GoalInput({ onSubmit, busy }: GoalInputProps) {
     </section>
   );
 }
+
+export const DEFAULT_GOAL = PRESETS[0].goal;

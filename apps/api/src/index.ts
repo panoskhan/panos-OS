@@ -1,8 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import type {
   ApiError,
   CreateTaskRequest,
   HealthResponse,
+  ProjectInfoResponse,
   TaskEvent,
   TaskEventsResponse,
   TaskResponse
@@ -57,7 +60,9 @@ interface EventStreamRequest {
   afterSeq: number;
 }
 
-type RouteResult = [status: number, payload: HealthResponse | TaskResponse | TaskEventsResponse] | EventStreamRequest;
+type RouteResult =
+  | [status: number, payload: HealthResponse | TaskResponse | TaskEventsResponse | ProjectInfoResponse]
+  | EventStreamRequest;
 
 function send(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string> = {}) {
   const body = JSON.stringify(payload);
@@ -124,6 +129,68 @@ function decodeTaskId(raw: string): string {
   } catch {
     throw new HttpError(400, "invalid_task_id");
   }
+}
+
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  ts: "TypeScript",
+  tsx: "TypeScript",
+  js: "JavaScript",
+  jsx: "JavaScript",
+  py: "Python",
+  go: "Go",
+  rs: "Rust",
+  java: "Java",
+  rb: "Ruby"
+};
+
+let cachedProjectInfo: ProjectInfoResponse | undefined;
+
+function computeProjectInfo(): ProjectInfoResponse {
+  const root = process.cwd();
+  const git = (args: string[]): string => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+
+  let files: string[] = [];
+  try {
+    files = git(["ls-files"]).split("\n").filter(Boolean);
+  } catch {
+    files = [];
+  }
+
+  const extensionCounts = new Map<string, number>();
+  for (const file of files) {
+    const extension = /\.([a-zA-Z0-9]+)$/.exec(file)?.[1]?.toLowerCase();
+    if (!extension || !(extension in LANGUAGE_BY_EXTENSION)) continue;
+    extensionCounts.set(extension, (extensionCounts.get(extension) ?? 0) + 1);
+  }
+  const topExtension = [...extensionCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  let name = "khan-os";
+  try {
+    const pkg = JSON.parse(readFileSync(`${root}/package.json`, "utf8")) as { name?: string };
+    if (pkg.name) name = pkg.name;
+  } catch {
+    // package.json missing or unreadable; keep the fallback name.
+  }
+
+  let lastUpdated: string | null = null;
+  try {
+    lastUpdated = git(["log", "-1", "--format=%cI"]) || null;
+  } catch {
+    lastUpdated = null;
+  }
+
+  return {
+    name,
+    fileCount: files.length,
+    language: topExtension ? LANGUAGE_BY_EXTENSION[topExtension] : "Unknown",
+    lastUpdated
+  };
+}
+
+/** Computed once per process: the repository's file list and package name don't change while the server runs. */
+function getProjectInfo(): ProjectInfoResponse {
+  cachedProjectInfo ??= computeProjectInfo();
+  return cachedProjectInfo;
 }
 
 function wantsEventStream(req: IncomingMessage): boolean {
@@ -203,6 +270,11 @@ async function route(orchestrator: KhanOrchestrator, req: IncomingMessage): Prom
   if (pathname === "/health") {
     if (method !== "GET") throw methodNotAllowed(["GET"]);
     return [200, { status: "ok", service: "khan-os-api" }];
+  }
+
+  if (pathname === "/v1/project") {
+    if (method !== "GET") throw methodNotAllowed(["GET"]);
+    return [200, getProjectInfo()];
   }
 
   if (pathname === "/v1/tasks") {

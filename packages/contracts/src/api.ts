@@ -6,6 +6,13 @@ export interface HealthResponse {
   service: string;
 }
 
+export interface ProjectInfoResponse {
+  name: string;
+  fileCount: number;
+  language: string;
+  lastUpdated: string | null;
+}
+
 export interface CreateTaskRequest {
   goal: string;
   projectId?: string;

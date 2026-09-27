@@ -1,90 +1,83 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ApprovalPanel } from "./components/ApprovalPanel";
 import { EventTimeline } from "./components/EventTimeline";
 import { ExecutionGraph } from "./components/ExecutionGraph";
-import { GoalInput } from "./components/GoalInput";
+import { DEFAULT_GOAL, GoalInput } from "./components/GoalInput";
+import { OrbitalCanvas } from "./components/OrbitalCanvas";
+import { QaResultPanel } from "./components/QaResultPanel";
+import { RightSidebar } from "./components/RightSidebar";
+import { Sidebar } from "./components/Sidebar";
 import { SystemReport } from "./components/SystemReport";
+import { TopBar } from "./components/TopBar";
+import { useProjectInfo } from "./hooks/useProjectInfo";
 import { useTask } from "./hooks/useTask";
+import { useTaskHistory } from "./hooks/useTaskHistory";
 import { api } from "./lib/api";
+import { useApiHealth } from "./lib/apiState";
 import "./styles.css";
-
-type ApiState = "checking" | "online" | "offline";
-
-function useApiHealth(): ApiState {
-  const [state, setState] = useState<ApiState>("checking");
-  useEffect(() => {
-    let active = true;
-    api.health().then(
-      () => active && setState("online"),
-      () => active && setState("offline")
-    );
-    return () => {
-      active = false;
-    };
-  }, []);
-  return state;
-}
 
 function App() {
   const apiState = useApiHealth();
-  const { report, error, pending, polling, createTask, approve, reject } = useTask();
+  const { report, error, pending, polling, createTask, approve, reject, selectTask } = useTask();
+  const history = useTaskHistory(report);
+  const { info: projectInfo, error: projectError } = useProjectInfo();
+  const [goal, setGoal] = useState(DEFAULT_GOAL);
+
   const refreshKey = report
     ? `${report.task.status}:${report.execution.map((entry) => entry.status).join(",")}`
     : "";
 
+  function focusGoalInput() {
+    document.getElementById("goal-input")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.getElementById("goal")?.focus();
+  }
+
+  function handleRecommend(nextGoal: string) {
+    setGoal(nextGoal);
+    focusGoalInput();
+  }
+
   return (
-    <main className="shell">
-      <header className="top">
-        <div className="brand">
-          <div className="orb" aria-hidden="true" />
-          <div>
-            <h1>KHAN OS</h1>
-            <small>AI ORCHESTRATION CORE</small>
+    <div className="app">
+      <Sidebar apiState={apiState} report={report} />
+
+      <main className="main" id="khan-main">
+        <TopBar apiState={apiState} polling={polling} />
+        <OrbitalCanvas />
+
+        <GoalInput goal={goal} onGoalChange={setGoal} onSubmit={createTask} busy={pending === "create"} />
+
+        {error && (
+          <div className="error-banner" role="alert">
+            <strong>Request failed:</strong> {error}
+            {apiState === "offline" && <> — is the API running at <code>{api.baseUrl}</code>?</>}
           </div>
-        </div>
-        <div className="api-status" data-state={apiState} title={api.baseUrl}>
-          <i aria-hidden="true" />
-          {apiState === "online" ? "API ONLINE" : apiState === "offline" ? "API OFFLINE" : "CONNECTING"}
-          {polling && <span className="polling">· LIVE</span>}
-        </div>
-      </header>
+        )}
 
-      <section className="hero">
-        <h2>Understand. Plan. Act. Verify.</h2>
-        <p>
-          Goals go to the real KHAN OS API. The orchestrator plans a task graph, runs it through the permission-gated
-          agent runtime and independent QA, and stops for your decision before any protected step executes.
-        </p>
-      </section>
-
-      <GoalInput onSubmit={createTask} busy={pending === "create"} />
-
-      {error && (
-        <div className="error-banner" role="alert">
-          <strong>Request failed:</strong> {error}
-          {apiState === "offline" && <> — is the API running at <code>{api.baseUrl}</code>?</>}
-        </div>
-      )}
-
-      <div className="grid">
-        <div className="stack">
+        <div className="content-grid">
           <ExecutionGraph report={report} />
-          <ApprovalPanel
-            key={report?.task.id}
-            report={report}
-            pending={pending}
-            onApprove={approve}
-            onReject={reject}
-          />
+          <EventTimeline taskId={report?.task.id} refreshKey={refreshKey} />
         </div>
+
         <SystemReport report={report} />
-      </div>
 
-      <EventTimeline taskId={report?.task.id} refreshKey={refreshKey} />
+        <ApprovalPanel key={report?.task.id} report={report} pending={pending} onApprove={approve} onReject={reject} />
 
-      <footer className="footer">KHAN OS · local development interface · {api.baseUrl}</footer>
-    </main>
+        <QaResultPanel report={report} />
+      </main>
+
+      <RightSidebar
+        history={history}
+        activeTaskId={report?.task.id}
+        onSelectTask={selectTask}
+        selecting={pending === "select"}
+        projectInfo={projectInfo}
+        projectError={projectError}
+        report={report}
+        onRecommend={handleRecommend}
+      />
+    </div>
   );
 }
 

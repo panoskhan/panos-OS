@@ -5,7 +5,7 @@ export function ExecutionGraph({ report }: { report: TaskResponse | null }) {
   const executionByStep = new Map(report?.execution.map((entry) => [entry.stepId, entry]));
 
   return (
-    <section className="panel">
+    <section className="panel" id="execution-graph">
       <header className="panel-head">
         <h2>Execution graph</h2>
         {report ? <StatusBadge status={report.task.status} /> : <span className="muted">READY</span>}
