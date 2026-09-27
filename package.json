@@ -5,13 +5,14 @@
   "description": "KHAN OS modular personal AI orchestration platform",
   "scripts": {
     "build": "tsc --noEmit && tsc --noEmit -p apps/web",
-    "test": "node --experimental-eventsource --import tsx --test \"tests/**/*.test.ts\"",
-    "demo": "node --import tsx apps/cli/src/index.ts",
-    "web": "node --import tsx apps/web/src/server.ts",
+    "test": "node --env-file=tests/test.env --experimental-eventsource --import tsx --test \"tests/**/*.test.ts\"",
     "api": "node --import tsx apps/api/src/index.ts",
-    "api:demo": "node --env-file=apps/api/demo.env --import tsx apps/api/src/index.ts",
+    "demo": "node --env-file=apps/api/demo.env --import tsx apps/api/src/index.ts",
     "web:dev": "vite apps/web",
-    "web:build": "vite build apps/web"
+    "web:demo": "vite apps/web --mode demo",
+    "web:build": "vite build apps/web",
+    "cli": "node --import tsx apps/cli/src/index.ts",
+    "web": "node --import tsx apps/web/src/server.ts"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",

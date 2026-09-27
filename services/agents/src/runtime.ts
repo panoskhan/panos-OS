@@ -14,6 +14,8 @@ export interface RuntimeExecution {
 
 export interface ExecuteStepOptions {
   approvedPermissions?: Iterable<string>;
+  /** Called with the permission decision as soon as it is made, before anything else happens for the step. */
+  onDecision?: (decision: PermissionDecision) => void;
   /** Called immediately before the agent handler runs. Not called for gated, denied or unknown steps. */
   onStart?: () => void;
 }
@@ -40,6 +42,7 @@ export class AgentRuntime {
 
   async executeStep(step: PlanStep, context: AgentContext, options: ExecuteStepOptions = {}): Promise<RuntimeExecution> {
     const permission = this.permissions.decide(step.permissions, options.approvedPermissions);
+    options.onDecision?.(permission);
     if (permission.requiresApproval) {
       return { stepId: step.id, agent: step.agent, status: "waiting_approval", permission };
     }

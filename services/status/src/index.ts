@@ -2,6 +2,13 @@ import type { AgentResult } from "../../../packages/contracts/src/agent";
 import type { ComponentId, ComponentStatus, StatusResponse } from "../../../packages/contracts/src/api";
 import type { VerificationResult } from "../../../agents/qa/src/index";
 import type { OrchestratorDiagnostics } from "../../orchestrator/src/orchestrator";
+import type { RateLimiterDescription } from "../../rate-limit/src/index";
+
+/** The part of the rate limiter the status check needs (injectable so tests can hand in a broken one). */
+export interface RateLimiterProbe {
+  describe(): RateLimiterDescription;
+  selfTest(): string[];
+}
 
 export interface StatusDependencies {
   service: string;
@@ -15,11 +22,15 @@ export interface StatusDependencies {
   planAgents: readonly string[];
   /** The independent QA verification function. */
   verify(results: AgentResult[], goal: string): VerificationResult;
+  rateLimiter: RateLimiterProbe;
 }
 
 type Outcome = Omit<ComponentStatus, "id" | "name">;
 
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const plural = (count: number, word: string) => {
+  if (count === 1) return `${count} ${word}`;
+  return `${count} ${word.endsWith("y") ? `${word.slice(0, -1)}ies` : `${word}s`}`;
+};
 
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -88,6 +99,52 @@ function probeQa(deps: StatusDependencies): Outcome {
   return outcome(problems.length ? [`QA ${problems.join(" and ")}`] : [], "Self-test passed: accepts a valid result, rejects a failed one and one that ignores the goal.");
 }
 
+function probeAudit(deps: StatusDependencies): Outcome {
+  const audit = deps.diagnostics().audit;
+  const metrics = { entries: audit.entries, writable: audit.writable ? 1 : 0, pending: audit.pending };
+
+  if (!audit.integrity.ok) {
+    return { state: "down", detail: `Hash chain broken at entry ${audit.integrity.brokenAt}: ${audit.integrity.reason}.`, metrics };
+  }
+  if (!audit.writable) {
+    const where = audit.location ?? "its storage";
+    return {
+      state: "down",
+      detail: `Not writing to ${where}: ${audit.lastError ?? "unknown error"}. ${plural(audit.entries, "entry")} held in memory, ${audit.pending} not yet written.`,
+      metrics
+    };
+  }
+  if (audit.storage === "memory") {
+    return {
+      state: "not_configured",
+      detail: `Recording in memory only, so the log is lost on restart. ${plural(audit.entries, "entry")}. Set KHAN_AUDIT_FILE to keep it.`,
+      metrics
+    };
+  }
+  return {
+    state: "up",
+    detail: `Recording to ${audit.location}. ${plural(audit.entries, "entry")}, file writable, hash chain intact.`,
+    metrics
+  };
+}
+
+function probeRateLimiter(deps: StatusDependencies): Outcome {
+  const { limits, tracked, limitedTotal } = deps.rateLimiter.describe();
+  const metrics = { tasksPerMinute: limits.tasks, readPerMinute: limits.read, auditPerMinute: limits.audit, tracked, limitedTotal };
+  const problems = deps.rateLimiter.selfTest();
+  if (problems.length) return { state: "down", detail: `Self-test failed: ${problems.join("; ")}.`, metrics };
+
+  if (limits.tasks === 0 && limits.read === 0 && limits.audit === 0) {
+    return { state: "not_configured", detail: "Rate limiting is off: every limit is 0.", metrics };
+  }
+  const per = (value: number) => (value === 0 ? "off" : `${value}/min`);
+  return {
+    state: "up",
+    detail: `Per client: task creation ${per(limits.tasks)}, other requests ${per(limits.read)}, audit reads ${per(limits.audit)}. ${plural(tracked, "client bucket")} tracked, ${plural(limitedTotal, "request")} refused so far.`,
+    metrics
+  };
+}
+
 function probeModelRouter(): Outcome {
   // routeModel is a pure function with no model list, and nothing in the orchestrator calls it.
   return { state: "not_configured", detail: "No models are registered and the router isn't used by the orchestrator yet." };
@@ -103,7 +160,9 @@ export function collectStatus(deps: StatusDependencies): StatusResponse {
     run("model-router", "Model Router", probeModelRouter),
     run("agents", "Agents", () => probeAgents(deps)),
     run("permissions", "Permissions", () => probePermissions(deps)),
-    run("qa", "Independent QA", () => probeQa(deps))
+    run("qa", "Independent QA", () => probeQa(deps)),
+    run("audit", "Audit Log", () => probeAudit(deps)),
+    run("rate-limiter", "Rate Limiter", () => probeRateLimiter(deps))
   ];
 
   return {

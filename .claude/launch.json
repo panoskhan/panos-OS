@@ -4,13 +4,13 @@
     {
       "name": "khan-api",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "api:demo"],
+      "runtimeArgs": ["run", "demo"],
       "port": 3001
     },
     {
       "name": "khan-web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "web:dev"],
+      "runtimeArgs": ["run", "web:demo"],
       "port": 5173,
       "url": "http://127.0.0.1:5173"
     }

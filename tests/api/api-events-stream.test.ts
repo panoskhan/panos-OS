@@ -5,7 +5,7 @@ import { createKhanApiServer, type KhanApiServerOptions } from "../../apps/api/s
 import type { TaskEvent, TaskResponse } from "../../packages/contracts/src/api";
 import { KhanOrchestrator } from "../../services/orchestrator/src/orchestrator";
 import { TaskStore } from "../../services/orchestrator/src/task-store";
-import { gatedHandler, stepEvents, stepStarted, waitForEvent } from "../support/orchestration";
+import { gatedHandler, stepEvents, stepStarted } from "../support/orchestration";
 
 const ANALYSIS_GOAL = "Analyze this project and identify the next engineering tasks.";
 const GITHUB_GOAL = "Implement the fix and push the changes to GitHub.";
@@ -89,8 +89,11 @@ async function createTask(base: string, goal: string): Promise<TaskResponse> {
   return (await response.json()) as TaskResponse;
 }
 
+/** The last event of a task: completion and failure end with their own event; a cancel ends with its status change. */
 const isTerminalStatus = (event: TaskEvent) =>
-  event.type === "task.status_changed" && ["completed", "failed", "cancelled"].includes(event.data.to as string);
+  event.type === "task.completed" ||
+  event.type === "task.failed" ||
+  (event.type === "task.status_changed" && event.data.to === "cancelled");
 
 test("event stream replays a finished task's history, sends end, and closes", async () => {
   await withApi(async (base, orchestrator) => {
@@ -160,8 +163,31 @@ test("event stream stays open through approval and streams the resumed steps", a
       ["step.started", "qa"],
       ["step.completed", "qa"]
     ]);
-    assert.equal(resumed.at(-1)?.data.to, "completed");
+    assert.equal(resumed.at(-1)?.type, "task.completed");
+    assert.equal(resumed.at(-2)?.data.to, "completed", "the status change comes just before the completion event");
     assert.deepEqual(await stream.next(), { event: "end", data: "{}" });
+  });
+});
+
+test("a task that fails ends its stream on task.failed, not on the status change before it", async () => {
+  await withApi(async (base, orchestrator) => {
+    const { task } = await createTask(base, GITHUB_GOAL);
+    await orchestrator.whenSettled(task.id);
+    const stream = await openStream(`${base}/v1/tasks/${task.id}/events`);
+    await stream.readEventsUntil((event) => event.type === "task.status_changed" && event.data.to === "waiting_approval");
+
+    const rejected = await fetch(`${base}/v1/tasks/${task.id}/reject`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "Not now" })
+    });
+    assert.equal(rejected.status, 200);
+
+    const tail = await stream.readEventsUntil(isTerminalStatus);
+    assert.deepEqual(tail.map((event) => event.type), ["task.rejected", "task.status_changed", "task.failed"]);
+    assert.equal(tail.at(-1)?.data.stage, "approval_rejected");
+    assert.deepEqual(await stream.next(), { event: "end", data: "{}" });
+    assert.equal(await stream.next(), null);
   });
 });
 

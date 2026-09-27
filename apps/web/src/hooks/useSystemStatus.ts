@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { StatusResponse } from "../../../../packages/contracts/src/api";
-import { api, type KhanApiClient } from "../lib/api";
+import { ApiRequestError, api, type KhanApiClient } from "../lib/api";
 
 /**
  * checking  no answer yet
@@ -37,8 +37,10 @@ export function useSystemStatus(recheckWhen: unknown, client: KhanApiClient = ap
     try {
       const report = await client.getStatus();
       if (alive.current) setStatus({ state: "online", report });
-    } catch {
-      if (alive.current) setStatus({ state: "offline", report: null });
+    } catch (error) {
+      // A 429 means the API is alive and asking us to slow down: keep what we last knew instead of showing it offline.
+      const rateLimited = error instanceof ApiRequestError && error.status === 429;
+      if (alive.current && !rateLimited) setStatus({ state: "offline", report: null });
     } finally {
       inFlight.current = false;
       if (again.current && alive.current) {

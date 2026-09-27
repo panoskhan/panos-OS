@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { AgentResult, AgentContext } from "../../../packages/contracts/src/agent";
-import type { TaskEvent, TaskEventType } from "../../../packages/contracts/src/api";
+import type { Actor, TaskEvent, TaskEventType } from "../../../packages/contracts/src/api";
 import type { Task, TaskStatus } from "../../../packages/contracts/src/task";
 import { canTransition, transition } from "./state-machine";
 import { TaskStore, type TaskCounts, type TaskEventListener, type TaskRecord } from "./task-store";
+import { AuditLog, type AuditHealth } from "../../audit/src/index";
 import type { PermissionDecision } from "../../permissions/src/index";
-import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner/src/index";
+import { plannerAgent, createPlan, PlanningError, type PlanStep } from "../../../agents/planner/src/index";
 import { validatePlan } from "../../../agents/planner/src/validator";
 import { codingAgent } from "../../../agents/coding/src/index";
 import { qaAgent, verifyIndependentQa, type VerificationResult } from "../../../agents/qa/src/index";
-import { AgentRuntime, type AgentHandler } from "../../agents/src/runtime";
+import { AgentRuntime, type AgentHandler, type RuntimeExecution } from "../../agents/src/runtime";
 
 export interface ExecutionEntry {
   stepId: string;
@@ -30,6 +31,7 @@ export interface OrchestratorDiagnostics {
   registeredAgents: string[];
   permissions: { decide(required: string[]): PermissionDecision };
   tasks: TaskCounts;
+  audit: AuditHealth;
 }
 
 export class TaskNotFoundError extends Error {
@@ -40,7 +42,7 @@ export class TaskNotFoundError extends Error {
 }
 
 export class InvalidTaskStateError extends Error {
-  constructor(readonly taskId: string, readonly status: TaskStatus, action: string) {
+  constructor(readonly taskId: string, readonly status: TaskStatus, readonly action: string) {
     super(`Cannot ${action} task ${taskId} in status '${status}'`);
     this.name = "InvalidTaskStateError";
   }
@@ -90,16 +92,25 @@ export class KhanOrchestrator {
   private readonly runtime: AgentRuntime;
   private readonly planFactory: PlanFactory;
   private readonly store: TaskStore;
+  private readonly audit: AuditLog;
 
   constructor(
     runtime = new AgentRuntime(),
     planFactory: PlanFactory = createPlan,
     codingHandler: AgentHandler = defaultCodingHandler,
-    store = new TaskStore()
+    store = new TaskStore(),
+    audit = new AuditLog()
   ) {
     this.runtime = runtime;
     this.planFactory = planFactory;
     this.store = store;
+    this.audit = audit;
+
+    // Every event of every task becomes an audit entry. `record` never throws, so a failing audit sink cannot
+    // break a task.
+    this.store.onAppend((event) =>
+      this.audit.record({ at: event.at, taskId: event.taskId, type: event.type, actor: event.actor, data: event.data })
+    );
 
     this.runtime.register(codingAgent.id, codingHandler);
 
@@ -125,7 +136,7 @@ export class KhanOrchestrator {
    * Creates and plans a task, then starts executing it in the background.
    * Returns immediately with the task in `executing` (or `failed` if planning failed).
    */
-  start(goal: string, projectId = "default"): ExecutionReport {
+  start(goal: string, projectId = "default", actor: Actor = "anonymous"): ExecutionReport {
     const normalizedGoal = goal.trim();
     if (!normalizedGoal) throw new Error("Goal is required");
 
@@ -147,7 +158,7 @@ export class KhanOrchestrator {
       events: []
     };
     this.store.add(record);
-    this.emit(record, "task.created", { goal: task.goal, projectId });
+    this.emit(record, "task.created", { goal: task.goal, projectId }, actor);
 
     this.setStatus(record, "understanding");
     this.setStatus(record, "planning");
@@ -156,10 +167,9 @@ export class KhanOrchestrator {
     try {
       plan = this.planFactory(task.goal);
     } catch (error) {
-      return this.fail(record, {
-        passed: false,
-        checks: ["planning"],
-        findings: [error instanceof Error ? error.message : String(error)]
+      const message = error instanceof Error ? error.message : String(error);
+      return this.fail(record, { passed: false, checks: ["planning"], findings: [message] }, "planning", {
+        code: error instanceof PlanningError ? error.code : "planner_error"
       });
     }
     record.report.plan = plan;
@@ -168,7 +178,7 @@ export class KhanOrchestrator {
 
     const validation = validatePlan(plan);
     if (!validation.valid) {
-      return this.fail(record, { passed: false, checks: ["dependency-validation"], findings: validation.errors });
+      return this.fail(record, { passed: false, checks: ["dependency-validation"], findings: validation.errors }, "plan_validation");
     }
 
     this.setStatus(record, "executing");
@@ -184,8 +194,14 @@ export class KhanOrchestrator {
     return {
       registeredAgents: this.runtime.registeredAgents(),
       permissions: this.runtime.permissionEngine,
-      tasks: this.store.counts()
+      tasks: this.store.counts(),
+      audit: this.audit.health()
     };
+  }
+
+  /** The audit log every decision is recorded in. */
+  get auditLog(): AuditLog {
+    return this.audit;
   }
 
   events(taskId: string): TaskEvent[] {
@@ -209,42 +225,54 @@ export class KhanOrchestrator {
   }
 
   /** Grants the permissions of the step awaiting approval and resumes execution from that step in the background. */
-  approve(taskId: string): ExecutionReport {
+  approve(taskId: string, reason?: string, actor: Actor = "anonymous"): ExecutionReport {
     const record = this.require(taskId);
     const step = this.stepAwaitingApproval(record, "approve");
     for (const permission of step.permissions) record.approvedPermissions.add(permission);
-    this.emit(record, "task.approved", { stepId: step.id, permissions: step.permissions });
-    this.setStatus(record, "executing");
+    this.emit(record, "task.approved", { stepId: step.id, permissions: step.permissions, ...(reason ? { reason } : {}) }, actor);
+    this.setStatus(record, "executing", actor);
     return this.launch(record);
   }
 
-  reject(taskId: string, reason?: string): ExecutionReport {
+  reject(taskId: string, reason?: string, actor: Actor = "anonymous"): ExecutionReport {
     const record = this.require(taskId);
     const step = this.stepAwaitingApproval(record, "reject");
-    this.emit(record, "task.rejected", { stepId: step.id, permissions: step.permissions, ...(reason ? { reason } : {}) });
-    return this.fail(record, {
-      passed: false,
-      checks: ["approval-rejected"],
-      findings: [`Approval rejected for step: ${step.id}`, ...(reason ? [`Reason: ${reason}`] : [])]
-    });
+    this.emit(record, "task.rejected", { stepId: step.id, permissions: step.permissions, ...(reason ? { reason } : {}) }, actor);
+    return this.fail(
+      record,
+      {
+        passed: false,
+        checks: ["approval-rejected"],
+        findings: [`Approval rejected for step: ${step.id}`, ...(reason ? [`Reason: ${reason}`] : [])]
+      },
+      "approval_rejected",
+      { stepId: step.id },
+      actor
+    );
   }
 
   /**
    * Cancels the task. If a step is running, it finishes and its result is recorded,
    * but no further steps start.
    */
-  cancel(taskId: string, reason?: string): ExecutionReport {
+  cancel(taskId: string, reason?: string, actor: Actor = "anonymous"): ExecutionReport {
     const record = this.require(taskId);
     const status = record.report.task.status;
     if (!canTransition(status, "cancelled")) throw new InvalidTaskStateError(taskId, status, "cancel");
 
-    this.emit(record, "task.cancelled", reason ? { reason } : {});
+    const runningStep = record.report.execution.find((entry) => entry.status === "running")?.stepId;
+    this.emit(
+      record,
+      "task.cancelled",
+      { fromStatus: status, ...(runningStep ? { duringStep: runningStep } : {}), ...(reason ? { reason } : {}) },
+      actor
+    );
     record.report.verification = {
       passed: false,
       checks: ["cancelled"],
       findings: [`Task cancelled while ${status}`, ...(reason ? [`Reason: ${reason}`] : [])]
     };
-    this.setStatus(record, "cancelled");
+    this.setStatus(record, "cancelled", actor);
     return this.snapshot(record);
   }
 
@@ -268,11 +296,16 @@ export class KhanOrchestrator {
 
       const step = plan[record.nextStepIndex];
       if (!step.dependsOn.every((dependency) => record.completedSteps.has(dependency))) {
-        this.fail(record, {
-          passed: false,
-          checks: ["dependency-order"],
-          findings: [`Dependencies not completed for task: ${step.id}`]
-        });
+        this.fail(
+          record,
+          {
+            passed: false,
+            checks: ["dependency-order"],
+            findings: [`Dependencies not completed for task: ${step.id}`]
+          },
+          "dependency_order",
+          { stepId: step.id }
+        );
         return;
       }
 
@@ -284,6 +317,15 @@ export class KhanOrchestrator {
       };
       const runtimeResult = await this.runtime.executeStep(step, context, {
         approvedPermissions: record.approvedPermissions,
+        onDecision: (permission) =>
+          this.emit(record, "permission.decided", {
+            stepId: step.id,
+            agent: step.agent,
+            permissions: step.permissions,
+            decision: permission.requiresApproval ? "needs_approval" : permission.allowed ? "allowed" : "denied",
+            deniedPermissions: permission.deniedPermissions,
+            preApproved: step.permissions.filter((permissionName) => record.approvedPermissions.has(permissionName))
+          }),
         onStart: () => {
           this.recordExecution(record, { stepId: step.id, agent: step.agent, status: "running" });
           this.emit(record, "step.started", { stepId: step.id, agent: step.agent });
@@ -299,7 +341,7 @@ export class KhanOrchestrator {
         status: runtimeResult.status,
         output: runtimeResult.output
       });
-      this.emit(record, `step.${runtimeResult.status}`, { stepId: step.id, agent: step.agent });
+      this.emit(record, `step.${runtimeResult.status}`, this.stepOutcome(step, runtimeResult));
 
       // A step that was already running when the task was cancelled is recorded above; nothing further starts.
       if (this.isCancelled(record)) return;
@@ -315,14 +357,21 @@ export class KhanOrchestrator {
           // A failed QA result is itself a valid negative verification outcome.
           // Preserve the independent QA contract instead of collapsing it into
           // the generic agent-execution failure shape.
-          this.fail(record, verifyIndependentQa(record.agentResults, task.goal));
+          const verdict = verifyIndependentQa(record.agentResults, task.goal);
+          this.emitQaVerdict(record, verdict);
+          this.fail(record, verdict, "qa", { stepId: step.id });
           return;
         }
-        this.fail(record, {
-          passed: false,
-          checks: ["agent-execution"],
-          findings: runtimeResult.output?.findings ?? [runtimeResult.output?.summary ?? "Agent execution failed"]
-        });
+        this.fail(
+          record,
+          {
+            passed: false,
+            checks: ["agent-execution"],
+            findings: runtimeResult.output?.findings ?? [runtimeResult.output?.summary ?? "Agent execution failed"]
+          },
+          "agent_execution",
+          { stepId: step.id }
+        );
         return;
       }
 
@@ -330,6 +379,7 @@ export class KhanOrchestrator {
         // The QA agent independently verifies the results that existed before QA ran.
         // Do not include the QA result itself in the verification input.
         record.qaVerification = verifyIndependentQa(record.agentResults, task.goal);
+        this.emitQaVerdict(record, record.qaVerification);
       }
 
       record.completedSteps.add(step.id);
@@ -337,18 +387,46 @@ export class KhanOrchestrator {
     }
 
     this.setStatus(record, "verifying");
-    record.report.verification = record.qaVerification ?? verifyIndependentQa(record.agentResults, task.goal);
-    this.setStatus(record, record.report.verification.passed ? "completed" : "failed");
+    const verification = record.qaVerification ?? verifyIndependentQa(record.agentResults, task.goal);
+    if (!record.qaVerification) this.emitQaVerdict(record, verification); // a plan without a QA step
+    record.report.verification = verification;
+    if (verification.passed) {
+      this.setStatus(record, "completed");
+      this.emit(record, "task.completed", { checks: verification.checks, findings: verification.findings });
+    } else {
+      this.fail(record, verification, "qa");
+    }
+  }
+
+  /** The event data for a step's outcome: enough to tell a denied permission from a handler error afterwards. */
+  private stepOutcome(step: PlanStep, result: RuntimeExecution): Record<string, unknown> {
+    const data: Record<string, unknown> = { stepId: step.id, agent: step.agent };
+    if (result.status === "waiting_approval") data.permissions = step.permissions;
+    if (result.status === "completed" && result.output) data.summary = result.output.summary;
+    if (result.status === "failed") {
+      const denied = result.permission.deniedPermissions;
+      data.reason = denied.length ? `Permissions denied: ${denied.join(", ")}` : (result.output?.summary ?? "Step failed");
+      if (denied.length) data.deniedPermissions = denied;
+    }
+    return data;
+  }
+
+  private emitQaVerdict(record: TaskRecord, verification: VerificationResult): void {
+    this.emit(record, "qa.verdict", { passed: verification.passed, checks: verification.checks, findings: verification.findings });
   }
 
   /** Last-resort handler for errors escaping the execution loop, so a background run can never crash the process. */
   private failUnexpectedly(record: TaskRecord, error: unknown): void {
     if (!canTransition(record.report.task.status, "failed")) return;
-    this.fail(record, {
-      passed: false,
-      checks: ["internal-error"],
-      findings: [error instanceof Error ? error.message : String(error)]
-    });
+    this.fail(
+      record,
+      {
+        passed: false,
+        checks: ["internal-error"],
+        findings: [error instanceof Error ? error.message : String(error)]
+      },
+      "internal_error"
+    );
   }
 
   private isCancelled(record: TaskRecord): boolean {
@@ -372,20 +450,28 @@ export class KhanOrchestrator {
 
   // Verification is set before the status change so listeners reacting to the
   // status event always read a consistent report.
-  private fail(record: TaskRecord, verification: VerificationResult): ExecutionReport {
+  /** `stage` says where it failed (planning, agent_execution, qa, approval_rejected, ...) so the audit log can tell why. */
+  private fail(
+    record: TaskRecord,
+    verification: VerificationResult,
+    stage: string,
+    extra: Record<string, unknown> = {},
+    actor: Actor = "system"
+  ): ExecutionReport {
     record.report.verification = verification;
-    this.setStatus(record, "failed");
+    this.setStatus(record, "failed", actor);
+    this.emit(record, "task.failed", { stage, checks: verification.checks, findings: verification.findings, ...extra }, actor);
     return this.snapshot(record);
   }
 
-  private setStatus(record: TaskRecord, to: TaskStatus): void {
+  private setStatus(record: TaskRecord, to: TaskStatus, actor: Actor = "system"): void {
     const from = record.report.task.status;
     record.report.task.status = transition(from, to);
-    this.emit(record, "task.status_changed", { from, to });
+    this.emit(record, "task.status_changed", { from, to }, actor);
   }
 
-  private emit(record: TaskRecord, type: TaskEventType, data: Record<string, unknown> = {}): void {
-    this.store.appendEvent(record, type, data);
+  private emit(record: TaskRecord, type: TaskEventType, data: Record<string, unknown> = {}, actor: Actor = "system"): void {
+    this.store.appendEvent(record, type, data, actor);
   }
 
   private require(taskId: string): TaskRecord {

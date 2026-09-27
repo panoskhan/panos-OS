@@ -1,3 +1,5 @@
 node_modules/
 apps/web/dist/
 __pycache__/
+# The audit log written by the API server (see KHAN_AUDIT_FILE).
+data/

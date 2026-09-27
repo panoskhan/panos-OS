@@ -1,5 +1,5 @@
 import type { AgentResult } from "../../../packages/contracts/src/agent";
-import type { TaskEvent, TaskEventType } from "../../../packages/contracts/src/api";
+import type { Actor, TaskEvent, TaskEventType } from "../../../packages/contracts/src/api";
 import type { VerificationResult } from "../../../agents/qa/src/index";
 import type { ExecutionReport } from "./orchestrator";
 
@@ -29,6 +29,7 @@ export interface TaskCounts {
 export class TaskStore {
   private readonly records = new Map<string, TaskRecord>();
   private readonly listeners = new Map<string, Set<TaskEventListener>>();
+  private readonly everyEvent = new Set<TaskEventListener>();
 
   add(record: TaskRecord): void {
     const id = record.report.task.id;
@@ -67,22 +68,31 @@ export class TaskStore {
     };
   }
 
+  /** Registers a listener for every event of every task (the audit log uses this). Returns an unsubscribe function. */
+  onAppend(listener: TaskEventListener): () => void {
+    this.everyEvent.add(listener);
+    return () => this.everyEvent.delete(listener);
+  }
+
   listenerCount(taskId: string): number {
     return this.listeners.get(taskId)?.size ?? 0;
   }
 
-  appendEvent(record: TaskRecord, type: TaskEventType, data: Record<string, unknown> = {}): TaskEvent {
+  appendEvent(record: TaskRecord, type: TaskEventType, data: Record<string, unknown> = {}, actor: Actor = "system"): TaskEvent {
     const event: TaskEvent = {
       seq: record.events.length + 1,
       taskId: record.report.task.id,
       type,
       at: new Date().toISOString(),
+      actor,
       data
     };
     record.events.push(event);
 
-    for (const listener of [...(this.listeners.get(event.taskId) ?? [])]) {
-      // A failing listener (e.g. a dropped stream) must never break task execution.
+    // The store-wide listeners run first, so the audit entry exists before anything reacts to the event.
+    const listeners = [...this.everyEvent, ...(this.listeners.get(event.taskId) ?? [])];
+    for (const listener of listeners) {
+      // A failing listener (a dropped stream, a full disk) must never break task execution.
       try {
         listener(structuredClone(event));
       } catch (error) {

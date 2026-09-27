@@ -51,15 +51,26 @@ export type TaskEventType =
   | "step.completed"
   | "step.failed"
   | "step.waiting_approval"
+  | "permission.decided"
+  | "qa.verdict"
   | "task.approved"
   | "task.rejected"
-  | "task.cancelled";
+  | "task.cancelled"
+  | "task.completed"
+  | "task.failed";
+
+/**
+ * Who caused an event: "system" for the orchestrator's own decisions, "anonymous" for a request while the API
+ * has no authentication. Phase 5d will name real callers here (for example "user:<id>").
+ */
+export type Actor = string;
 
 export interface TaskEvent {
   seq: number;
   taskId: string;
   type: TaskEventType;
   at: string;
+  actor: Actor;
   data: Record<string, unknown>;
 }
 
@@ -71,9 +82,11 @@ export interface TaskEventsResponse {
 export interface ApiError {
   error: string;
   detail?: string;
+  /** Only on 429 rate_limited: how long to wait before trying again. */
+  retryAfterMs?: number;
 }
 
-export type ComponentId = "orchestrator" | "model-router" | "agents" | "permissions" | "qa";
+export type ComponentId = "orchestrator" | "model-router" | "agents" | "permissions" | "qa" | "audit" | "rate-limiter";
 
 /**
  * up             the component's self-test passed
@@ -89,6 +102,40 @@ export interface ComponentStatus {
   /** What was checked and what was found, in plain words. */
   detail: string;
   metrics?: Record<string, number>;
+}
+
+/** Everything in the task event vocabulary, plus entries the API layer records itself. */
+export type AuditEntryType = TaskEventType | "request.refused";
+
+/**
+ * One line of the append-only audit log. `id` counts up across all tasks from 1. `hash` covers every other
+ * field plus `prevHash`, so changing, removing or reordering any entry breaks the chain from that point on.
+ */
+export interface AuditEntry {
+  id: number;
+  at: string;
+  taskId: string | null;
+  type: AuditEntryType;
+  actor: Actor;
+  data: Record<string, unknown>;
+  /** The previous entry's hash; 64 zeros for the first entry. */
+  prevHash: string;
+  hash: string;
+}
+
+export interface AuditPage {
+  order: "asc" | "desc";
+  limit: number;
+  /** Pass as `cursor` to get the next page, or null when there is none. It is the id of the last entry returned. */
+  nextCursor: string | null;
+}
+
+/** GET /v1/audit */
+export interface AuditResponse {
+  entries: AuditEntry[];
+  page: AuditPage;
+  /** How many entries match the filters, across all pages. */
+  total: number;
 }
 
 /** GET /v1/status. Always HTTP 200; a failing component shows up as `degraded`. */
