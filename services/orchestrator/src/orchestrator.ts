@@ -124,6 +124,36 @@ export class KhanOrchestrator {
         findings: verification.findings
       };
     });
+
+    this.failInterruptedTasks();
+  }
+
+  /**
+   * Tasks loaded from storage that were mid-execution when the last process stopped cannot continue: the agent that was
+   * working on them is gone. They are marked failed, and say so, rather than left "executing" forever.
+   * Tasks waiting for approval and finished tasks are left as they were.
+   */
+  private failInterruptedTasks(): void {
+    for (const record of this.store.all()) {
+      const status = record.report.task.status;
+      if (record.activeRun || status === "waiting_approval" || !canTransition(status, "failed")) continue;
+
+      const stepId = record.report.execution.find((entry) => entry.status === "running")?.stepId;
+      if (stepId) {
+        this.recordExecution(record, {
+          stepId,
+          agent: record.report.plan.find((step) => step.id === stepId)?.agent ?? "unknown",
+          status: "failed",
+          output: { status: "failure", summary: "Interrupted by a server restart", findings: ["Interrupted by a server restart"] }
+        });
+      }
+      this.fail(
+        record,
+        { passed: false, checks: ["interrupted"], findings: [`The server stopped while this task was ${status}, so it could not finish.`] },
+        "interrupted",
+        stepId ? { stepId } : {}
+      );
+    }
   }
 
   /** Plans and executes a goal, resolving once it completes, fails or needs approval. */

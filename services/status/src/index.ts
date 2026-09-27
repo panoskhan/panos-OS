@@ -3,6 +3,7 @@ import type { ComponentId, ComponentStatus, StatusResponse } from "../../../pack
 import type { VerificationResult } from "../../../agents/qa/src/index";
 import type { OrchestratorDiagnostics } from "../../orchestrator/src/orchestrator";
 import type { RateLimiterDescription } from "../../rate-limit/src/index";
+import type { ModelHealth } from "../../model-router/src/client";
 
 /** The part of the rate limiter the status check needs (injectable so tests can hand in a broken one). */
 export interface RateLimiterProbe {
@@ -23,6 +24,8 @@ export interface StatusDependencies {
   /** The independent QA verification function. */
   verify(results: AgentResult[], goal: string): VerificationResult;
   rateLimiter: RateLimiterProbe;
+  /** The model client, when a key is configured. Without one the Model Router reports not_configured. */
+  model?: { health(): ModelHealth };
 }
 
 type Outcome = Omit<ComponentStatus, "id" | "name">;
@@ -145,9 +148,27 @@ function probeRateLimiter(deps: StatusDependencies): Outcome {
   };
 }
 
-function probeModelRouter(): Outcome {
-  // routeModel is a pure function with no model list, and nothing in the orchestrator calls it.
-  return { state: "not_configured", detail: "No models are registered and the router isn't used by the orchestrator yet." };
+function probeModelRouter(deps: StatusDependencies): Outcome {
+  if (!deps.model) {
+    return { state: "not_configured", detail: "No model is configured. Put NVIDIA_API_KEY in .env to connect one." };
+  }
+  // Never calls the model itself (that would spend quota on every status check): it reports what real calls showed.
+  const health = deps.model.health();
+  const metrics = { calls: health.calls, failures: health.failures };
+  const name = health.model ?? "the model";
+  const failedLast = health.lastFailure && (!health.lastSuccessAt || health.lastFailure.at >= health.lastSuccessAt);
+
+  if (failedLast) {
+    return { state: "down", detail: `${name}: the last call failed at ${health.lastFailure!.at}: ${health.lastFailure!.message}`, metrics };
+  }
+  if (!health.lastSuccessAt) {
+    return { state: "not_configured", detail: `A key is set for ${name}, but no call has succeeded yet, so it is unverified.`, metrics };
+  }
+  return {
+    state: "up",
+    detail: `${name} answered its last call at ${health.lastSuccessAt}. ${plural(health.calls, "call")}, ${health.failures} failed.`,
+    metrics
+  };
 }
 
 /** Self-tests the live components and reports what it found. Never throws. */
@@ -157,7 +178,7 @@ export function collectStatus(deps: StatusDependencies): StatusResponse {
 
   const components = [
     run("orchestrator", "Orchestrator", () => probeOrchestrator(deps, uptimeSeconds)),
-    run("model-router", "Model Router", probeModelRouter),
+    run("model-router", "Model Router", () => probeModelRouter(deps)),
     run("agents", "Agents", () => probeAgents(deps)),
     run("permissions", "Permissions", () => probePermissions(deps)),
     run("qa", "Independent QA", () => probeQa(deps)),

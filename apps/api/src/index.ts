@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import type {
@@ -30,6 +30,10 @@ import {
   type RateLimitConfig
 } from "../../../services/rate-limit/src/index";
 import { collectStatus } from "../../../services/status/src/index";
+import { ModelClient, modelConfigFromEnv, type ModelConfig, type ModelHealth } from "../../../services/model-router/src/client";
+import { createModelCodingHandler } from "../../../agents/coding/src/model-handler";
+import { TaskStore } from "../../../services/orchestrator/src/task-store";
+import { FileTaskPersistence } from "../../../services/orchestrator/src/task-persistence";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -60,6 +64,8 @@ export interface KhanApiServerOptions {
    * reverse proxy's forwarded address (or in tests): anything else lets a caller pick its own bucket.
    */
   clientAddress?: (req: IncomingMessage) => string;
+  /** The model client, when a key is configured. Only used to report the Model Router's status. */
+  model?: { health(): ModelHealth };
 }
 
 const SERVICE_NAME = "khan-os-api";
@@ -433,7 +439,8 @@ export function createKhanApiServer(
     clock = Date.now,
     rateLimits = rateLimitsFromEnv(),
     auth = ApiKeyAuth.fromEnv(),
-    clientAddress = clientIp
+    clientAddress = clientIp,
+    model
   }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
@@ -449,7 +456,8 @@ export function createKhanApiServer(
       diagnostics: () => orchestrator.diagnostics(),
       planAgents: PLAN_AGENTS,
       verify: verifyIndependentQa,
-      rateLimiter: limiter
+      rateLimiter: limiter,
+      model
     });
 
   return createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -524,20 +532,49 @@ export function createKhanApiServer(
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
   // Run as a server, the audit log is kept in a file (git-ignored data/ folder unless KHAN_AUDIT_FILE says otherwise).
+  // Secrets such as NVIDIA_API_KEY live in a git-ignored .env file, if there is one. Variables already set win.
+  if (existsSync(join(process.cwd(), ".env"))) process.loadEnvFile(join(process.cwd(), ".env"));
   const auditFile = process.env.KHAN_AUDIT_FILE ?? join(process.cwd(), "data", "audit.jsonl");
   const audit = new AuditLog(new FileAuditSink(auditFile));
-  const orchestrator = new KhanOrchestrator(undefined, undefined, undefined, undefined, audit);
+
   let auth: ApiKeyAuth;
+  let modelConfig: ModelConfig | null;
   try {
     auth = ApiKeyAuth.fromEnv();
+    modelConfig = modelConfigFromEnv();
   } catch (error) {
-    // A half-configured auth must stop the server, not silently run without it.
+    // A half-configured auth or model must stop the server, not silently run without it.
     console.error(`Cannot start: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
-  createKhanApiServer(orchestrator, { auth }).listen(PORT, "127.0.0.1", () => {
+  const model = modelConfig ? new ModelClient(modelConfig) : undefined;
+  const tasksFile = process.env.KHAN_TASKS_FILE ?? join(process.cwd(), "data", "tasks.json");
+  let store: TaskStore;
+  try {
+    store = new TaskStore(new FileTaskPersistence(tasksFile));
+  } catch (error) {
+    console.error(`Cannot start: could not read the task file ${tasksFile}: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  const orchestrator = new KhanOrchestrator(
+    undefined,
+    undefined,
+    model ? createModelCodingHandler(model) : undefined,
+    store,
+    audit
+  );
+  if (model) {
+    // One real, tiny call at startup, so the Model Router's status reflects a real answer rather than a guess.
+    model.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 8 }).then(
+      () => console.log(`Model: ${model.model} answered the startup check.`),
+      (error: unknown) => console.error(`Model: startup check failed: ${error instanceof Error ? error.message : String(error)}`)
+    );
+  }
+  createKhanApiServer(orchestrator, { auth, model }).listen(PORT, "127.0.0.1", () => {
+    console.log(model ? `Model: ${model.model} (real agent steps; the coding agent proposes but changes no files)` : "Model: none (NVIDIA_API_KEY is not set): agent steps are stubs.");
     const health = audit.health();
     console.log(`KHAN OS API: http://127.0.0.1:${PORT}`);
+    console.log(`Tasks: ${tasksFile} (${store.all().length} loaded)`);
     console.log(
       auth.enabled
         ? `Auth: on (${auth.names().join(", ")}). Requests need "Authorization: Bearer <key>"; /health and /v1/status are open.`

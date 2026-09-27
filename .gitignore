@@ -3,3 +3,6 @@ apps/web/dist/
 __pycache__/
 # The audit log written by the API server (see KHAN_AUDIT_FILE).
 data/
+# Local secrets (NVIDIA_API_KEY and friends). Copy .env.example to .env.
+.env
+.env.local

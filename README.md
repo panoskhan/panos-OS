@@ -7,8 +7,9 @@ the result, and records every decision in a tamper-evident audit log.
 **Understand → Plan → Act → Verify**, with a human decision in front of any consequential action.
 
 > Status: the first vertical slice works end to end (API, live web UI, approval loop, audit log, auth, rate limiting).
-> The agents themselves are still **stubs**: the coding and QA agents simulate work, and nothing touches GitHub or your
-> files yet. See [Known limitations](#known-limitations).
+> The agents are **stubs** unless `NVIDIA_API_KEY` is set; with it, the coding agent is backed by a real model that
+> proposes but does not change files. QA is still rule-based, and nothing touches GitHub or your files yet.
+> See [Known limitations](#known-limitations).
 
 ## Run it
 
@@ -141,7 +142,7 @@ uses it yet, which never counts as degraded).
 | Component | What is checked |
 |---|---|
 | Orchestrator | Uptime and live task counts |
-| Model Router | Always `not_configured`: the router is a function nothing calls yet |
+| Model Router | `not_configured` without `NVIDIA_API_KEY`, and until a real call has succeeded; `up` after a successful call; `down` if the last call failed. It never calls the model itself, so checking status costs nothing (the server makes one tiny call at startup) |
 | Agents | Every agent a plan can name has a handler |
 | Permissions | The live engine allows reads, gates `github.write` behind approval, and denies unknown permissions |
 | Independent QA | Accepts a valid result, rejects a failed one and one that ignores the goal |
@@ -157,6 +158,9 @@ uses it yet, which never counts as degraded).
 | `KHAN_API_KEYS` | `name:key` pairs; unset means auth is off | unset |
 | `KHAN_RATE_LIMIT_TASKS` / `_READ` / `_AUDIT` | Requests per minute; `0` disables | `10` / `60` / `20` |
 | `KHAN_AUDIT_FILE` | Audit log path | `data/audit.jsonl` |
+| `KHAN_TASKS_FILE` | Where tasks are kept between restarts | `data/tasks.json` |
+| `NVIDIA_API_KEY` | Key for the model endpoint. Put it in `.env` (git-ignored, see `.env.example`), never in chat or in code. Unset means agent steps are stubs | unset |
+| `KHAN_MODEL` / `KHAN_MODEL_BASE_URL` / `KHAN_MODEL_TIMEOUT_MS` | Model, OpenAI-compatible endpoint, and per-call timeout | `google/gemma-4-31b-it` / `https://integrate.api.nvidia.com/v1` / `60000` |
 | `KHAN_STUB_STEP_DELAY_MS` | **Stub timing only:** makes the stub agents wait per step so progress is visible in demos | `0` |
 | `VITE_API_URL` | API address the web app calls | `http://127.0.0.1:3001` |
 | `VITE_API_KEY` | Key the web app sends | none |
@@ -171,8 +175,10 @@ uses it yet, which never counts as degraded).
 - `services/agents`: the agent runtime (permission check, then the handler).
 - `services/permissions`: the permission policy and engine.
 - `services/status`, `services/audit`, `services/rate-limit`, `services/auth`: the four pieces described above.
-- `services/model-router`: model-agnostic routing (a pure function; not connected yet).
-- `agents/`: planner, coding, QA and files agents.
+- `services/model-router`: `client.ts` is the real model client (OpenAI-compatible chat, timeouts, typed errors, health);
+  `router.ts` is an unused capability-routing function, kept for when more than one model exists.
+- `agents/`: planner, coding and QA agents. With a key, the coding agent is backed by the model
+  (`agents/coding/src/model-handler.ts`).
 - `packages/contracts`: the shared types, used by both the API and the web app.
 - `tests/`: unit, integration and real-HTTP tests (real servers, real `EventSource`).
 
@@ -181,10 +187,12 @@ long-term data direction (PostgreSQL, pgvector, Redis) is in `docs/ARCHITECTURE.
 
 ## Known limitations
 
-- **The agents are stubs.** Nothing writes files or touches GitHub; approving a "push to GitHub" task only marks the
-  step done.
-- **Tasks live in memory** and are lost when the API restarts. The audit log survives, so an audit entry can refer to a
-  task the API no longer has.
+- **Without a key the agents are stubs; with one they only propose.** The model-backed coding agent reasons about each
+  step and its first finding says "no files were changed and no tests were run". Nothing writes files, runs tests or
+  touches GitHub; approving a "push to GitHub" task only marks the step done.
+- **Tasks are kept in `data/tasks.json`,** rewritten whole after every event (fine for one local server, not for
+  thousands of tasks). A task that was mid-execution when the server stopped is marked failed ("interrupted"); one
+  waiting for approval can still be approved after a restart. There is no cleanup of old tasks.
 - **Keys have no roles** and there is no key rotation or revocation short of restarting with a new `KHAN_API_KEYS`.
   Failed logins are rate limited but not written to the audit log.
 - **No TLS.** The API speaks plain HTTP on localhost. `?token=` puts the key in a URL, so do not expose the API beyond
@@ -194,8 +202,7 @@ long-term data direction (PostgreSQL, pgvector, Redis) is in `docs/ARCHITECTURE.
 - **Rate limits are per process and in memory,** and counted per client address. The 60/minute default for reads is
   tight for a busy browser tab (each live event triggers a re-read); raise `KHAN_RATE_LIMIT_READ` if you see 429s.
 - A step that is already running cannot be interrupted by cancel; it finishes and is recorded.
-- The model router is not connected, and the "Projects / Agents / Model Router / Permissions / Settings" screens are
-  not built.
+- The "Projects / Agents / Model Router / Permissions / Settings" screens are not built.
 
 ## Development principle
 
