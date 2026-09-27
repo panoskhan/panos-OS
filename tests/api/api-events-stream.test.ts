@@ -5,7 +5,7 @@ import { createKhanApiServer, type KhanApiServerOptions } from "../../apps/api/s
 import type { TaskEvent, TaskResponse } from "../../packages/contracts/src/api";
 import { KhanOrchestrator } from "../../services/orchestrator/src/orchestrator";
 import { TaskStore } from "../../services/orchestrator/src/task-store";
-import { gatedHandler, stepEvents, stepStarted, waitForEvent } from "../support/orchestration";
+import { gatedHandler, stepEvents, stepStarted } from "../support/orchestration";
 
 const ANALYSIS_GOAL = "Analyze this project and identify the next engineering tasks.";
 const GITHUB_GOAL = "Implement the fix and push the changes to GitHub.";
