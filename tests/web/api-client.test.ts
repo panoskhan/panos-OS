@@ -26,6 +26,10 @@ test("web api client drives the full task loop against the real API", async () =
   try {
     assert.deepEqual(await client.health(), { status: "ok", service: "khan-os-api" });
 
+    const status = await client.getStatus();
+    assert.equal(status.status, "ok");
+    assert.deepEqual(status.components.map((component) => component.state), ["up", "not_configured", "up", "up", "up"]);
+
     const approvedId = await createPausedTask();
     const approved = await client.approveTask(approvedId);
     assert.equal(approved.task.status, "executing");

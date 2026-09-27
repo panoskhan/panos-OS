@@ -9,7 +9,7 @@ import { QaResult } from "./components/QaResult";
 import { RightRail } from "./components/RightRail";
 import { Sidebar } from "./components/Sidebar";
 import { SystemReport } from "./components/SystemReport";
-import { useApiHealth } from "./hooks/useApiHealth";
+import { useSystemStatus } from "./hooks/useSystemStatus";
 import { isTerminal, useTask } from "./hooks/useTask";
 import { useTaskHistory } from "./hooks/useTaskHistory";
 import { api } from "./lib/api";
@@ -23,20 +23,24 @@ function focusGoal() {
 }
 
 function App() {
-  const apiState = useApiHealth();
   const { report, events, connection, error, pending, createTask, load, approve, reject } = useTask();
+  // Re-check the system the moment the live task connection has trouble, not only on the 5 s timer.
+  const status = useSystemStatus(`${connection}|${error ?? ""}`);
+  const apiState = status.state;
+  const degraded = status.report?.status === "degraded";
   const tasks = useTaskHistory(report);
 
   const avatar = avatarState(report, pending);
   const active = useMemo(() => activeAgents(report, pending), [report, pending]);
   const finished = report !== null && isTerminal(report.task.status);
 
-  const coreLabel = apiState === "online" ? "CORE ONLINE" : apiState === "offline" ? "CORE OFFLINE" : "CONNECTING";
+  const coreLabel =
+    apiState === "online" ? (degraded ? "CORE DEGRADED" : "CORE ONLINE") : apiState === "offline" ? "CORE OFFLINE" : "CONNECTING";
 
   return (
     <div className="app">
       <Sidebar
-        apiState={apiState}
+        status={status}
         avatar={avatar}
         onHome={() => window.scrollTo({ top: 0, behavior: "smooth" })}
         onNewTask={focusGoal}
@@ -46,7 +50,7 @@ function App() {
       <main className="main">
         <header className="topbar">
           <p className="tagline">Understand · Plan · Act · Verify</p>
-          <div className="core-badge" data-state={apiState} title={api.baseUrl}>
+          <div className="core-badge" data-state={degraded ? "degraded" : apiState} title={api.baseUrl}>
             <i aria-hidden="true" />
             {coreLabel}
             {connection === "live" && <span className="live">· LIVE</span>}

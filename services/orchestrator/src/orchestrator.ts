@@ -3,7 +3,8 @@ import type { AgentResult, AgentContext } from "../../../packages/contracts/src/
 import type { TaskEvent, TaskEventType } from "../../../packages/contracts/src/api";
 import type { Task, TaskStatus } from "../../../packages/contracts/src/task";
 import { canTransition, transition } from "./state-machine";
-import { TaskStore, type TaskEventListener, type TaskRecord } from "./task-store";
+import { TaskStore, type TaskCounts, type TaskEventListener, type TaskRecord } from "./task-store";
+import type { PermissionDecision } from "../../permissions/src/index";
 import { plannerAgent, createPlan, type PlanStep } from "../../../agents/planner/src/index";
 import { validatePlan } from "../../../agents/planner/src/validator";
 import { codingAgent } from "../../../agents/coding/src/index";
@@ -22,6 +23,13 @@ export interface ExecutionReport {
   plan: PlanStep[];
   execution: ExecutionEntry[];
   verification: VerificationResult;
+}
+
+/** A read-only view of the live orchestrator, for health checks. */
+export interface OrchestratorDiagnostics {
+  registeredAgents: string[];
+  permissions: { decide(required: string[]): PermissionDecision };
+  tasks: TaskCounts;
 }
 
 export class TaskNotFoundError extends Error {
@@ -169,6 +177,15 @@ export class KhanOrchestrator {
 
   get(taskId: string): ExecutionReport {
     return this.snapshot(this.require(taskId));
+  }
+
+  /** The live agent handlers, permission engine and task counts, for health checks. Changes nothing. */
+  diagnostics(): OrchestratorDiagnostics {
+    return {
+      registeredAgents: this.runtime.registeredAgents(),
+      permissions: this.runtime.permissionEngine,
+      tasks: this.store.counts()
+    };
   }
 
   events(taskId: string): TaskEvent[] {

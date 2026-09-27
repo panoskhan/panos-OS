@@ -1,9 +1,13 @@
 import type { AgentDefinition } from "../../../packages/contracts/src/agent";
 
+/** The agents a plan step may name. Each one needs a handler registered in the runtime. */
+export const PLAN_AGENTS = ["coding", "qa"] as const;
+export type PlanAgent = (typeof PLAN_AGENTS)[number];
+
 export interface PlanStep {
   id: string;
   title: string;
-  agent: "coding" | "qa";
+  agent: PlanAgent;
   permissions: string[];
   dependsOn: string[];
 }

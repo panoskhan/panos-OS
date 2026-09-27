@@ -18,6 +18,13 @@ export interface TaskRecord {
 
 export type TaskEventListener = (event: TaskEvent) => void;
 
+export interface TaskCounts {
+  total: number;
+  /** Tasks whose execution loop is running right now. */
+  running: number;
+  waitingApproval: number;
+}
+
 /** In-memory task store. State is lost when the process exits. */
 export class TaskStore {
   private readonly records = new Map<string, TaskRecord>();
@@ -31,6 +38,16 @@ export class TaskStore {
 
   get(id: string): TaskRecord | undefined {
     return this.records.get(id);
+  }
+
+  counts(): TaskCounts {
+    let running = 0;
+    let waitingApproval = 0;
+    for (const record of this.records.values()) {
+      if (record.activeRun) running++;
+      if (record.report.task.status === "waiting_approval") waitingApproval++;
+    }
+    return { total: this.records.size, running, waitingApproval };
   }
 
   /** Registers a listener for events appended to one task. Returns an unsubscribe function. */
