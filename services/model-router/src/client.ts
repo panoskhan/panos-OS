@@ -1,6 +1,7 @@
 export const DEFAULT_MODEL = "google/gemma-4-31b-it";
 export const DEFAULT_MODEL_BASE_URL = "https://integrate.api.nvidia.com/v1";
-export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
+// The hosted 31B model answered a trivial question in ~112s on a cold start, so anything shorter fails real calls.
+export const DEFAULT_MODEL_TIMEOUT_MS = 180_000;
 
 export interface ModelConfig {
   apiKey: string;

@@ -49,7 +49,7 @@ const clientFor = (baseUrl: string, timeoutMs = 5000) => new ModelClient({ apiKe
 test("no key means no model; the defaults point at NVIDIA and gemma", () => {
   assert.equal(modelConfigFromEnv({}), null);
   assert.equal(modelConfigFromEnv({ NVIDIA_API_KEY: "   " }), null);
-  assert.deepEqual(modelConfigFromEnv({ NVIDIA_API_KEY: " k " }), { apiKey: "k", baseUrl: DEFAULT_MODEL_BASE_URL, model: DEFAULT_MODEL, timeoutMs: 60_000 });
+  assert.deepEqual(modelConfigFromEnv({ NVIDIA_API_KEY: " k " }), { apiKey: "k", baseUrl: DEFAULT_MODEL_BASE_URL, model: DEFAULT_MODEL, timeoutMs: 180_000 });
   const custom = modelConfigFromEnv({ NVIDIA_API_KEY: "k", KHAN_MODEL: "m", KHAN_MODEL_BASE_URL: "http://x.test/v1/", KHAN_MODEL_TIMEOUT_MS: "1500" });
   assert.deepEqual(custom, { apiKey: "k", baseUrl: "http://x.test/v1", model: "m", timeoutMs: 1500 });
 });

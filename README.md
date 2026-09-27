@@ -160,7 +160,7 @@ uses it yet, which never counts as degraded).
 | `KHAN_AUDIT_FILE` | Audit log path | `data/audit.jsonl` |
 | `KHAN_TASKS_FILE` | Where tasks are kept between restarts | `data/tasks.json` |
 | `NVIDIA_API_KEY` | Key for the model endpoint. Put it in `.env` (git-ignored, see `.env.example`), never in chat or in code. Unset means agent steps are stubs | unset |
-| `KHAN_MODEL` / `KHAN_MODEL_BASE_URL` / `KHAN_MODEL_TIMEOUT_MS` | Model, OpenAI-compatible endpoint, and per-call timeout | `google/gemma-4-31b-it` / `https://integrate.api.nvidia.com/v1` / `60000` |
+| `KHAN_MODEL` / `KHAN_MODEL_BASE_URL` / `KHAN_MODEL_TIMEOUT_MS` | Model, OpenAI-compatible endpoint, and per-call timeout | `google/gemma-4-31b-it` / `https://integrate.api.nvidia.com/v1` / `180000` |
 | `KHAN_STUB_STEP_DELAY_MS` | **Stub timing only:** makes the stub agents wait per step so progress is visible in demos | `0` |
 | `VITE_API_URL` | API address the web app calls | `http://127.0.0.1:3001` |
 | `VITE_API_KEY` | Key the web app sends | none |
