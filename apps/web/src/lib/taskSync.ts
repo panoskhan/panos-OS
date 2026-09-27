@@ -1,5 +1,5 @@
 import type { TaskEvent, TaskResponse } from "../../../../packages/contracts/src/api";
-import { ApiRequestError, type KhanApiClient } from "./api";
+import { ApiRequestError, UNAUTHORIZED_HINT, type KhanApiClient } from "./api";
 import { isTerminal } from "./terminal";
 
 /**
@@ -236,6 +236,13 @@ export class TaskSync {
       this.stop();
       this.options.onConnection("idle");
       this.options.onError(TASK_GONE_MESSAGE);
+      return;
+    }
+    if (error instanceof ApiRequestError && error.status === 401) {
+      // Retrying cannot fix a missing or wrong key (and a 401 fails an EventSource for good), so say so and stop.
+      this.stop();
+      this.options.onConnection("idle");
+      this.options.onError(`Not authorized: ${UNAUTHORIZED_HINT}.`);
       return;
     }
     if (error instanceof ApiRequestError && error.status === 429) {

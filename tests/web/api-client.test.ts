@@ -4,8 +4,44 @@ import type { AddressInfo } from "node:net";
 import { createKhanApiServer } from "../../apps/api/src/index";
 import { ApiRequestError, createApiClient } from "../../apps/web/src/lib/api";
 import { KhanOrchestrator } from "../../services/orchestrator/src/orchestrator";
+import { ApiKeyAuth } from "../../services/auth/src/index";
 
 const GITHUB_GOAL = "Implement the fix and push the changes to GitHub.";
+
+test("web api client sends its key as a Bearer header, and a request without it fails with a hint", async () => {
+  const server = createKhanApiServer(new KhanOrchestrator(), { auth: ApiKeyAuth.parse("web:client-key-9") });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const keyed = createApiClient(base, "client-key-9");
+    const created = await keyed.createTask({ goal: GITHUB_GOAL });
+    assert.equal((await keyed.getTask(created.task.id)).task.id, created.task.id);
+    assert.ok((await keyed.getAudit({ limit: 1 })).total > 0);
+    assert.equal((await keyed.getStatus()).status, "ok");
+    assert.deepEqual(await keyed.health(), { status: "ok", service: "khan-os-api" });
+
+    for (const client of [createApiClient(base), createApiClient(base, "wrong-key")]) {
+      await assert.rejects(client.getTask(created.task.id), (error: unknown) => {
+        assert.ok(error instanceof ApiRequestError);
+        assert.equal(error.status, 401);
+        assert.equal(error.code, "unauthorized");
+        assert.match(error.message, /set VITE_API_KEY/);
+        return true;
+      });
+      assert.equal((await client.getStatus()).status, "ok", "the status endpoint needs no key");
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("the event stream URL carries the key as ?token=, encoded, and only when there is a key", () => {
+  assert.equal(createApiClient("http://api.test:3001/").eventsUrl("task_1"), "http://api.test:3001/v1/tasks/task_1/events");
+  assert.equal(createApiClient("http://api.test:3001", "k1").eventsUrl("task_1"), "http://api.test:3001/v1/tasks/task_1/events?token=k1");
+  assert.equal(createApiClient("http://api.test:3001", "a b&c=d/é").eventsUrl("t 1"), "http://api.test:3001/v1/tasks/t%201/events?token=a%20b%26c%3Dd%2F%C3%A9");
+});
 
 test("web api client turns a real 429 into an error that says how long to wait", async () => {
   const server = createKhanApiServer(new KhanOrchestrator(), { rateLimits: { tasks: 1, read: 0, audit: 0 } });

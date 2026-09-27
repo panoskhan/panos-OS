@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { createKhanApiServer } from "../../apps/api/src/index";
+import { createKhanApiServer, type KhanApiServerOptions } from "../../apps/api/src/index";
+import { ApiKeyAuth } from "../../services/auth/src/index";
 import { ApiRequestError, createApiClient, type KhanApiClient } from "../../apps/web/src/lib/api";
 import { TASK_GONE_MESSAGE, TaskSync, type Connection, type TaskSyncOptions } from "../../apps/web/src/lib/taskSync";
 import type { TaskEvent, TaskResponse } from "../../packages/contracts/src/api";
@@ -25,10 +26,10 @@ interface Live {
   client: KhanApiClient;
 }
 
-async function withLive(fn: (live: Live) => Promise<void>, handler?: AgentHandler) {
+async function withLive(fn: (live: Live) => Promise<void>, handler?: AgentHandler, serverOptions: KhanApiServerOptions = {}) {
   const store = new TaskStore();
   const orchestrator = new KhanOrchestrator(undefined, undefined, handler, store);
-  const server = createKhanApiServer(orchestrator, { retryMs: 10 });
+  const server = createKhanApiServer(orchestrator, { retryMs: 10, ...serverOptions });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
@@ -466,6 +467,51 @@ test("when the API rate limits reads, the sync stays quiet for the wait, then ca
       sync.stop();
     }
   }, gate.handler);
+});
+
+test("against an API that needs a key, a keyed sync streams the whole run over ?token=", { timeout: 15000 }, async () => {
+  await withLive(
+    async ({ base, orchestrator }) => {
+      const keyed = createApiClient(base, "sync-key-1");
+      const { task } = await keyed.createTask({ goal: ANALYSIS_GOAL });
+      const watch = new Watch();
+      const sync = new TaskSync({ client: keyed, taskId: task.id, pollIntervalMs: 60_000, ...watch.handlers() });
+      sync.start();
+      try {
+        await watch.until(() => watch.report?.task.status === "completed" && watch.connections.at(-1) === "idle");
+
+        assert.deepEqual(watch.connections, ["connecting", "live", "idle"], "the stream itself authenticated: no polling was needed");
+        assert.deepEqual(watch.events, orchestrator.events(task.id));
+      } finally {
+        sync.stop();
+      }
+    },
+    undefined,
+    { auth: ApiKeyAuth.parse("web:sync-key-1") }
+  );
+});
+
+test("against an API that needs a key, a sync without one stops with an explanation instead of retrying forever", { timeout: 15000 }, async () => {
+  await withLive(
+    async ({ base }) => {
+      const keyed = createApiClient(base, "sync-key-1");
+      const { task } = await keyed.createTask({ goal: ANALYSIS_GOAL });
+      const watch = new Watch();
+      const sync = new TaskSync({ client: createApiClient(base), taskId: task.id, pollIntervalMs: 10, ...watch.handlers() });
+      sync.start();
+      try {
+        await watch.until(() => watch.errors.some((message) => message?.startsWith("Not authorized")));
+
+        assert.match(String(watch.errors.at(-1)), /set VITE_API_KEY/);
+        assert.equal(watch.connections.at(-1), "idle");
+        assert.equal(watch.reports.length, 0);
+      } finally {
+        sync.stop();
+      }
+    },
+    undefined,
+    { auth: ApiKeyAuth.parse("web:sync-key-1") }
+  );
 });
 
 test("a task the server no longer knows stops the sync with an explanation", { timeout: 15000 }, async () => {

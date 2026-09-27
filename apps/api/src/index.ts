@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import type {
+  Actor,
   ApiError,
   AuditResponse,
   CreateTaskRequest,
@@ -20,6 +21,7 @@ import {
   TaskNotFoundError
 } from "../../../services/orchestrator/src/orchestrator";
 import { AuditLog, DEFAULT_PAGE_LIMIT, FileAuditSink, MAX_PAGE_LIMIT, type AuditQuery } from "../../../services/audit/src/index";
+import { ApiKeyAuth, bearerToken, type Principal } from "../../../services/auth/src/index";
 import {
   RateLimiter,
   classify,
@@ -32,6 +34,7 @@ import { collectStatus } from "../../../services/status/src/index";
 const PORT = Number(process.env.API_PORT ?? 3001);
 const MAX_BODY_BYTES = 1024 * 1024;
 const TASK_ROUTE = /^\/v1\/tasks\/([^/]+)(?:\/(approve|reject|cancel|events))?$/;
+const EVENTS_PATH = /^\/v1\/tasks\/[^/]+\/events$/;
 const DEFAULT_CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const SSE_RETRY_MS = 2_000;
@@ -50,6 +53,13 @@ export interface KhanApiServerOptions {
   clock?: () => number;
   /** Requests per minute per client. Defaults to the KHAN_RATE_LIMIT_* environment variables; 0 turns a limit off. */
   rateLimits?: RateLimitConfig;
+  /** API keys. Defaults to KHAN_API_KEYS; with none configured every request is accepted as "anonymous". */
+  auth?: ApiKeyAuth;
+  /**
+   * Who a request comes from, for rate limiting. Defaults to the socket's address. Override it only to trust a
+   * reverse proxy's forwarded address (or in tests): anything else lets a caller pick its own bucket.
+   */
+  clientAddress?: (req: IncomingMessage) => string;
 }
 
 const SERVICE_NAME = "khan-os-api";
@@ -173,7 +183,7 @@ function readAudit(orchestrator: KhanOrchestrator, params: URLSearchParams): Aud
 }
 
 /** Records an attempt that was refused because of the task's state (approving a task that isn't waiting, and so on). */
-function refusalAudited<T>(orchestrator: KhanOrchestrator, action: string, taskId: string, attempt: () => T): T {
+function refusalAudited<T>(orchestrator: KhanOrchestrator, action: string, taskId: string, actor: Actor, attempt: () => T): T {
   try {
     return attempt();
   } catch (error) {
@@ -182,7 +192,7 @@ function refusalAudited<T>(orchestrator: KhanOrchestrator, action: string, taskI
         at: new Date().toISOString(),
         taskId,
         type: "request.refused",
-        actor: "anonymous",
+        actor,
         data: { action, taskStatus: error.status, reason: error.message }
       });
     }
@@ -337,7 +347,8 @@ function streamTaskEvents(
 async function route(
   orchestrator: KhanOrchestrator,
   req: IncomingMessage,
-  status: () => StatusResponse
+  status: () => StatusResponse,
+  actor: Actor
 ): Promise<RouteResult> {
   const method = req.method ?? "GET";
   const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
@@ -360,7 +371,7 @@ async function route(
   if (pathname === "/v1/tasks") {
     if (method !== "POST") throw methodNotAllowed(["POST"]);
     const { goal, projectId } = parseCreateTask(await readJsonBody(req));
-    return [201, orchestrator.start(goal, projectId)];
+    return [201, orchestrator.start(goal, projectId, actor)];
   }
 
   const match = TASK_ROUTE.exec(pathname);
@@ -382,15 +393,15 @@ async function route(
   switch (action) {
     case "approve": {
       const reason = parseReason(body);
-      return [202, refusalAudited(orchestrator, "approve", taskId, () => orchestrator.approve(taskId, reason))];
+      return [202, refusalAudited(orchestrator, "approve", taskId, actor, () => orchestrator.approve(taskId, reason, actor))];
     }
     case "reject": {
       const reason = parseReason(body);
-      return [200, refusalAudited(orchestrator, "reject", taskId, () => orchestrator.reject(taskId, reason))];
+      return [200, refusalAudited(orchestrator, "reject", taskId, actor, () => orchestrator.reject(taskId, reason, actor))];
     }
     case "cancel": {
       const reason = parseReason(body);
-      return [200, refusalAudited(orchestrator, "cancel", taskId, () => orchestrator.cancel(taskId, reason))];
+      return [200, refusalAudited(orchestrator, "cancel", taskId, actor, () => orchestrator.cancel(taskId, reason, actor))];
     }
     default:
       throw new HttpError(404, "not_found");
@@ -420,7 +431,9 @@ export function createKhanApiServer(
     heartbeatMs = DEFAULT_HEARTBEAT_MS,
     retryMs = SSE_RETRY_MS,
     clock = Date.now,
-    rateLimits = rateLimitsFromEnv()
+    rateLimits = rateLimitsFromEnv(),
+    auth = ApiKeyAuth.fromEnv(),
+    clientAddress = clientIp
   }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
@@ -467,17 +480,36 @@ export function createKhanApiServer(
     // Every response, errors included, carries the limit headers of the bucket it was counted against.
     const headers: Record<string, string> = { ...cors };
     const rateClass = classify(req.method ?? "GET", url.pathname);
-    // The per-client limit comes first, so requests that will be refused anyway (unknown paths, bad input) still cost a token.
-    const byClient = limiter.check(rateClass, `ip:${clientIp(req)}`);
-    if (byClient) {
-      Object.assign(headers, rateHeaders(byClient));
-      if (byClient.limited) {
-        send(res, 429, { error: "rate_limited", retryAfterMs: byClient.retryAfterMs }, headers);
+    let decision = limiter.check(rateClass, `ip:${clientAddress(req)}`);
+    const refuse = (limited: RateDecision) => {
+      send(res, 429, { error: "rate_limited", retryAfterMs: limited.retryAfterMs }, { ...headers, ...rateHeaders(limited) });
+    };
+    // 1. The per-client limit comes first, so requests that will be refused anyway (unknown paths, bad input, wrong keys)
+    //    still cost a token: guessing keys is rate limited too.
+    if (decision?.limited) return refuse(decision);
+
+    // 2. Authentication. /health and /v1/status are open by design.
+    let actor: Actor = "anonymous";
+    let principal: Principal | null = null;
+    if (auth.enabled && url.pathname !== "/health" && url.pathname !== "/v1/status") {
+      // A browser's EventSource cannot set headers, so the event stream (and only it) also accepts ?token=.
+      const fromQuery = EVENTS_PATH.test(url.pathname) ? (url.searchParams.get("token") ?? undefined) : undefined;
+      principal = auth.authenticate(bearerToken(req.headers.authorization) ?? fromQuery);
+      if (!principal) {
+        if (decision) Object.assign(headers, rateHeaders(decision));
+        send(res, 401, { error: "unauthorized" }, { ...headers, "WWW-Authenticate": 'Bearer realm="khan-os"' });
         return;
       }
-    }
+      actor = principal.name;
 
-    route(orchestrator, req, status).then(
+      // 3. The key's own limit, on top of the client's: one key shared across many addresses is still one caller.
+      const byKey = limiter.check(rateClass, `key:${principal.name}`);
+      if (byKey?.limited) return refuse(byKey);
+      if (byKey && (!decision || byKey.remaining < decision.remaining)) decision = byKey;
+    }
+    if (decision) Object.assign(headers, rateHeaders(decision));
+
+    route(orchestrator, req, status, actor).then(
       (result) => {
         if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
         else send(res, result[0], result[1], headers);
@@ -495,9 +527,22 @@ if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
   const auditFile = process.env.KHAN_AUDIT_FILE ?? join(process.cwd(), "data", "audit.jsonl");
   const audit = new AuditLog(new FileAuditSink(auditFile));
   const orchestrator = new KhanOrchestrator(undefined, undefined, undefined, undefined, audit);
-  createKhanApiServer(orchestrator).listen(PORT, "127.0.0.1", () => {
+  let auth: ApiKeyAuth;
+  try {
+    auth = ApiKeyAuth.fromEnv();
+  } catch (error) {
+    // A half-configured auth must stop the server, not silently run without it.
+    console.error(`Cannot start: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  createKhanApiServer(orchestrator, { auth }).listen(PORT, "127.0.0.1", () => {
     const health = audit.health();
     console.log(`KHAN OS API: http://127.0.0.1:${PORT}`);
+    console.log(
+      auth.enabled
+        ? `Auth: on (${auth.names().join(", ")}). Requests need "Authorization: Bearer <key>"; /health and /v1/status are open.`
+        : "Auth: off (KHAN_API_KEYS is not set): every request is accepted as 'anonymous'."
+    );
     console.log(`Audit log: ${auditFile} (${health.entries} entries, chain ${health.integrity.ok ? "intact" : `BROKEN at entry ${health.integrity.brokenAt}`})`);
   });
 }
