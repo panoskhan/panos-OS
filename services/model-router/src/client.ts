@@ -173,7 +173,24 @@ export class ModelClient {
 
     let text: unknown;
     try {
-      text = (JSON.parse(raw) as { choices?: Array<{ message?: { content?: unknown } }> }).choices?.[0]?.message?.content;
+      type ToolCall = { function?: { arguments?: string } };
+      type Msg = { content?: unknown; tool_calls?: ToolCall[] };
+      const parsed = JSON.parse(raw) as { choices?: Array<{ message?: Msg }> };
+      const message = parsed.choices?.[0]?.message;
+      if (message?.content != null) {
+        text = message.content;
+      } else if (message?.tool_calls?.[0]?.function?.arguments) {
+        // Some models return content via tool-call format even when no tools were requested.
+        // Extract the first argument value and use it as the response text.
+        const args = message.tool_calls[0].function.arguments;
+        try {
+          const parsed2 = JSON.parse(args) as Record<string, unknown>;
+          const firstVal = Object.values(parsed2)[0];
+          text = typeof firstVal === "string" ? firstVal : args;
+        } catch {
+          text = args;
+        }
+      }
     } catch {
       throw new ModelError("model_bad_response", `Model endpoint did not return JSON: ${snippet(raw)}`);
     }

@@ -1,16 +1,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
+import { setEnvVar, maskKey } from "../../../services/settings/src/index";
 import type {
   Actor,
   ApiError,
   AuditResponse,
   CreateTaskRequest,
   HealthResponse,
+  SettingsResponse,
   StatusResponse,
   TaskEvent,
   TaskEventsResponse,
-  TaskResponse
+  TaskResponse,
+  UpdateSettingsRequest,
+  UpdateSettingsResponse
 } from "../../../packages/contracts/src/api";
 import type { TaskStatus } from "../../../packages/contracts/src/task";
 import { PLAN_AGENTS } from "../../../agents/planner/src/index";
@@ -38,6 +42,18 @@ import { TaskStore } from "../../../services/orchestrator/src/task-store";
 import { FileTaskPersistence } from "../../../services/orchestrator/src/task-persistence";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
+
+/**
+ * A mutable holder for the live ModelClient so the Settings endpoint can hot-swap
+ * the model without restarting the process.
+ */
+export class ModelHolder {
+  constructor(public client: ModelClient | undefined) {}
+
+  health(): ModelHealth {
+    return this.client!.health();
+  }
+}
 const MAX_BODY_BYTES = 1024 * 1024;
 const TASK_ROUTE = /^\/v1\/tasks\/([^/]+)(?:\/(approve|reject|cancel|events))?$/;
 const EVENTS_PATH = /^\/v1\/tasks\/[^/]+\/events$/;
@@ -68,6 +84,10 @@ export interface KhanApiServerOptions {
   clientAddress?: (req: IncomingMessage) => string;
   /** The model client, when a key is configured. Only used to report the Model Router's status. */
   model?: { health(): ModelHealth };
+  /** Mutable model holder for hot-reload via /v1/settings. When provided, takes precedence over `model`. */
+  modelHolder?: ModelHolder;
+  /** Absolute path to the root .env file. Required for /v1/settings POST to persist key changes. */
+  envPath?: string;
 }
 
 const SERVICE_NAME = "khan-os-api";
@@ -131,7 +151,7 @@ interface EventStreamRequest {
 }
 
 type RouteResult =
-  | [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse]
+  | [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | SettingsResponse | UpdateSettingsResponse]
   | EventStreamRequest;
 
 const AUDIT_ORDERS = ["asc", "desc"] as const;
@@ -356,10 +376,44 @@ async function route(
   orchestrator: KhanOrchestrator,
   req: IncomingMessage,
   status: () => StatusResponse,
-  actor: Actor
+  actor: Actor,
+  modelHolder?: ModelHolder,
+  envPath?: string
 ): Promise<RouteResult> {
   const method = req.method ?? "GET";
   const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
+
+  if (pathname === "/v1/settings") {
+    if (method === "GET") {
+      const currentKey = process.env.NVIDIA_API_KEY?.trim();
+      const currentModel = process.env.KHAN_MODEL?.trim() ?? "google/gemma-4-31b-it";
+      const configured = modelHolder ? !!modelHolder.client : false;
+      return [200, { modelRouter: { configured, model: currentModel, keyMasked: currentKey ? maskKey(currentKey) : null } } satisfies SettingsResponse];
+    }
+    if (method === "POST") {
+      const body = asObject(await readJsonBody(req));
+      const { nvidiaApiKey } = body as UpdateSettingsRequest;
+      if (typeof nvidiaApiKey === "string" && envPath) {
+        setEnvVar(envPath, "NVIDIA_API_KEY", nvidiaApiKey || null);
+        if (nvidiaApiKey) process.env.NVIDIA_API_KEY = nvidiaApiKey;
+        else delete process.env.NVIDIA_API_KEY;
+        if (modelHolder) {
+          const newConfig = modelConfigFromEnv();
+          modelHolder.client = newConfig ? new ModelClient(newConfig) : undefined;
+          if (modelHolder.client) {
+            const probe = modelHolder.client;
+            probe.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 256 }).then(
+              () => console.log("Model: startup check passed after settings update."),
+              (e: unknown) => console.error(`Model: startup check failed after settings update: ${e instanceof Error ? e.message : String(e)}`)
+            );
+          }
+        }
+      }
+      const configured = modelHolder ? !!modelHolder.client : false;
+      return [200, { ok: true, configured } satisfies UpdateSettingsResponse];
+    }
+    throw methodNotAllowed(["GET", "POST"]);
+  }
 
   if (pathname === "/v1/audit") {
     if (method !== "GET") throw methodNotAllowed(["GET"]);
@@ -442,13 +496,17 @@ export function createKhanApiServer(
     rateLimits = rateLimitsFromEnv(),
     auth = ApiKeyAuth.fromEnv(),
     clientAddress = clientIp,
-    model
+    model,
+    modelHolder,
+    envPath
   }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
   const version = readVersion();
   const startedAt = clock();
   const limiter = new RateLimiter(rateLimits, clock);
+  // When a ModelHolder is provided it takes precedence over the static model option.
+  const modelForStatus = modelHolder ?? model;
   const status = () =>
     collectStatus({
       service: SERVICE_NAME,
@@ -459,7 +517,7 @@ export function createKhanApiServer(
       planAgents: PLAN_AGENTS,
       verify: verifyIndependentQa,
       rateLimiter: limiter,
-      model
+      model: modelForStatus
     });
 
   return createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -519,7 +577,7 @@ export function createKhanApiServer(
     }
     if (decision) Object.assign(headers, rateHeaders(decision));
 
-    route(orchestrator, req, status, actor).then(
+    route(orchestrator, req, status, actor, modelHolder, envPath).then(
       (result) => {
         if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
         else send(res, result[0], result[1], headers);
@@ -549,7 +607,9 @@ if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
     console.error(`Cannot start: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
-  const model = modelConfig ? new ModelClient(modelConfig) : undefined;
+  const modelClient = modelConfig ? new ModelClient(modelConfig) : undefined;
+  const modelHolder = new ModelHolder(modelClient);
+  const envFilePath = join(process.cwd(), ".env");
   const tasksFile = process.env.KHAN_TASKS_FILE ?? join(process.cwd(), "data", "tasks.json");
   let store: TaskStore;
   try {
@@ -559,7 +619,7 @@ if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
     process.exit(1);
   }
   // With a model the coding agent works in a sandbox copy of this project (set KHAN_WORKSPACE=off for text-only analysis).
-  const useWorkspace = model && process.env.KHAN_WORKSPACE?.trim().toLowerCase() !== "off";
+  const useWorkspace = modelClient && process.env.KHAN_WORKSPACE?.trim().toLowerCase() !== "off";
   const workspaces = new WorkspaceManager({
     source: process.cwd(),
     base: process.env.KHAN_WORKSPACE_DIR ?? join(process.cwd(), "data", "workspaces")
@@ -567,25 +627,25 @@ if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
   const orchestrator = new KhanOrchestrator(
     undefined,
     undefined,
-    model ? (useWorkspace ? createWorkspaceCodingHandler(model, workspaces) : createModelCodingHandler(model)) : undefined,
+    modelClient ? (useWorkspace ? createWorkspaceCodingHandler(modelClient, workspaces) : createModelCodingHandler(modelClient)) : undefined,
     store,
     audit
   );
-  if (model) {
+  if (modelClient) {
     // One real, tiny call at startup, so the Model Router's status reflects a real answer rather than a guess.
     // Room for a reasoning model to think before it answers: with 8 tokens it returns an empty message and the check fails.
-    model.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 256 }).then(
-      () => console.log(`Model: ${model.model} answered the startup check.`),
+    modelClient.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 256 }).then(
+      () => console.log(`Model: ${modelClient.model} answered the startup check.`),
       (error: unknown) => console.error(`Model: startup check failed: ${error instanceof Error ? error.message : String(error)}`)
     );
   }
-  createKhanApiServer(orchestrator, { auth, model }).listen(PORT, "127.0.0.1", () => {
+  createKhanApiServer(orchestrator, { auth, modelHolder, envPath: envFilePath }).listen(PORT, "127.0.0.1", () => {
     console.log(
-      !model
+      !modelClient
         ? "Model: none (NVIDIA_API_KEY is not set): agent steps are stubs."
         : useWorkspace
-          ? `Model: ${model.model}. The coding agent works in sandbox copies under ${workspaces.base}; the real project is never changed.`
-          : `Model: ${model.model} (text-only: the coding agent proposes but changes no files)`
+          ? `Model: ${modelClient.model}. The coding agent works in sandbox copies under ${workspaces.base}; the real project is never changed.`
+          : `Model: ${modelClient.model} (text-only: the coding agent proposes but changes no files)`
     );
     const health = audit.health();
     console.log(`KHAN OS API: http://127.0.0.1:${PORT}`);
