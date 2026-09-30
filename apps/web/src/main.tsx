@@ -1,4 +1,4 @@
-import { StrictMode, useMemo } from "react";
+import { StrictMode, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ApprovalPanel } from "./components/ApprovalPanel";
 import { EventTimeline } from "./components/EventTimeline";
@@ -8,6 +8,7 @@ import { OrbitalCanvas } from "./components/OrbitalCanvas";
 import { QaResult } from "./components/QaResult";
 import { RightRail } from "./components/RightRail";
 import { Sidebar } from "./components/Sidebar";
+import { SettingsPage } from "./components/SettingsPage";
 import { SystemReport } from "./components/SystemReport";
 import { useSystemStatus } from "./hooks/useSystemStatus";
 import { isTerminal, useTask } from "./hooks/useTask";
@@ -16,6 +17,8 @@ import { api } from "./lib/api";
 import { activeAgents, avatarState } from "./lib/derive";
 import "./styles.css";
 
+type Page = "home" | "settings";
+
 function focusGoal() {
   const input = document.getElementById("goal");
   input?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -23,6 +26,7 @@ function focusGoal() {
 }
 
 function App() {
+  const [page, setPage] = useState<Page>("home");
   const { report, events, connection, error, pending, createTask, load, approve, reject } = useTask();
   // Re-check the system the moment the live task connection has trouble, not only on the 5 s timer.
   const status = useSystemStatus(`${connection}|${error ?? ""}`);
@@ -42,12 +46,15 @@ function App() {
       <Sidebar
         status={status}
         avatar={avatar}
-        onHome={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-        onNewTask={focusGoal}
-        onHistory={() => document.getElementById("recent-tasks")?.focus()}
+        onHome={() => { setPage("home"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+        onNewTask={() => { setPage("home"); focusGoal(); }}
+        onHistory={() => { setPage("home"); document.getElementById("recent-tasks")?.focus(); }}
+        onSettings={() => setPage("settings")}
       />
 
-      <main className="main">
+      {page === "settings" && <SettingsPage />}
+
+      <main className="main" style={page !== "home" ? { display: "none" } : undefined}>
         <header className="topbar">
           <p className="tagline">Understand · Plan · Act · Verify</p>
           <div className="core-badge" data-state={degraded ? "degraded" : apiState} title={api.baseUrl}>

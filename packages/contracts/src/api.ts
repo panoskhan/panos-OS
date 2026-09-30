@@ -138,6 +138,31 @@ export interface AuditResponse {
   total: number;
 }
 
+/** GET /v1/settings — which integrations are configured (values are never returned). */
+export interface SettingsResponse {
+  modelRouter: {
+    /** Whether NVIDIA_API_KEY is set in the running environment. */
+    configured: boolean;
+    /** Active model name, or the default when no key is set. */
+    model: string;
+    /** Last 4 chars of the key, masked, or null when not set. */
+    keyMasked: string | null;
+  };
+}
+
+/** POST /v1/settings body. Omit a field to leave it unchanged. */
+export interface UpdateSettingsRequest {
+  /** Set to a new NVIDIA API key, or "" to clear it. */
+  nvidiaApiKey?: string;
+}
+
+/** POST /v1/settings response. */
+export interface UpdateSettingsResponse {
+  ok: boolean;
+  /** Whether the Model Router is now configured after the change. */
+  configured: boolean;
+}
+
 /** GET /v1/status. Always HTTP 200; a failing component shows up as `degraded`. */
 export interface StatusResponse {
   /** "degraded" when any component is down. A not_configured component does not degrade it. */

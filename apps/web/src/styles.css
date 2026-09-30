@@ -264,6 +264,71 @@ ul, ol { list-style: none; margin: 0; padding: 0; }
   .step[data-status="running"] .step-num, .avatar[data-tone="active"] small i { animation: none; }
 }
 
+/* ---------- Settings Page ---------- */
+.settings-page {
+  grid-column: 2; /* sits in the main column, beside the sidebar */
+  padding: 32px 40px;
+  max-width: 680px;
+}
+.settings-header { margin-bottom: 28px; }
+.settings-header h2 { font-size: 22px; font-weight: 700; color: var(--text); margin: 0 0 4px; }
+.settings-subtitle { font-size: 13px; color: var(--muted); margin: 0; }
+
+.settings-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px 28px;
+  margin-bottom: 20px;
+}
+.settings-card h3 { font-size: 15px; font-weight: 700; color: var(--text); margin: 0 0 6px; }
+.settings-desc { font-size: 13px; color: var(--muted); margin: 0 0 18px; line-height: 1.55; }
+.settings-desc a { color: var(--accent); text-decoration: none; }
+.settings-desc a:hover { text-decoration: underline; }
+
+.settings-status-row { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 20px; }
+.settings-status-list {
+  list-style: none; padding: 0; margin: 0; flex: 1;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.settings-status-list li {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text);
+}
+.settings-status-list li i {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none;
+}
+.settings-status-list li[data-state="online"] i { background: var(--ok); }
+.settings-status-list li[data-state="offline"] i { background: var(--danger); }
+.settings-status-list li[data-state="checking"] i { background: var(--warn); }
+.settings-status-list small { color: var(--muted); font-size: 11px; margin-left: auto; }
+.settings-status-list .model-name { font-family: monospace; font-size: 11px; }
+
+.current-key {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px;
+}
+.key-label { font-size: 11px; color: var(--muted); flex: none; }
+.key-masked { font-size: 13px; color: var(--text); letter-spacing: 0.05em; flex: none; }
+
+.btn-ghost { background: none; border: none; cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 4px; }
+.btn-danger-ghost { color: var(--danger); }
+.btn-danger-ghost:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+.settings-label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.06em; text-transform: uppercase; }
+.settings-input-group { display: flex; flex-direction: column; }
+.settings-input-row { display: flex; gap: 10px; }
+.settings-input {
+  flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-size: 14px; padding: 9px 12px; outline: none; font-family: monospace;
+}
+.settings-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+.settings-input::placeholder { color: var(--muted); font-family: monospace; }
+
+.settings-feedback { font-size: 13px; margin: 10px 0 0; }
+.settings-ok { color: var(--ok); }
+.settings-err { color: var(--danger); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1180px) {
   .app { grid-template-columns: 220px minmax(0, 1fr); }

@@ -8,12 +8,13 @@ interface SidebarProps {
   onHome: () => void;
   onNewTask: () => void;
   onHistory: () => void;
+  onSettings: () => void;
 }
 
 interface NavItem {
   label: string;
   glyph: string;
-  action?: "home" | "new" | "history";
+  action?: "home" | "new" | "history" | "settings";
 }
 
 const NAV: NavItem[] = [
@@ -24,7 +25,7 @@ const NAV: NavItem[] = [
   { label: "Model Router", glyph: "⇄" },
   { label: "Permissions", glyph: "⛨" },
   { label: "History", glyph: "◷", action: "history" },
-  { label: "Settings", glyph: "⚙" }
+  { label: "Settings", glyph: "⚙", action: "settings" }
 ];
 
 // Shown before the first answer and while the API is unreachable. The states come from GET /v1/status once it answers.
@@ -79,8 +80,8 @@ function rowsFor({ state, report }: SystemStatus): Row[] {
   );
 }
 
-export function Sidebar({ status, avatar, onHome, onNewTask, onHistory }: SidebarProps) {
-  const handlers = { home: onHome, new: onNewTask, history: onHistory };
+export function Sidebar({ status, avatar, onHome, onNewTask, onHistory, onSettings }: SidebarProps) {
+  const handlers = { home: onHome, new: onNewTask, history: onHistory, settings: onSettings };
   const rows = rowsFor(status);
   const online = status.report?.components.filter((component) => component.state === "up").length ?? 0;
   const anyDown = status.report?.components.some((component) => component.state === "down") ?? false;

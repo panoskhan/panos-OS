@@ -11,8 +11,7 @@
     "web:dev": "vite apps/web",
     "web:demo": "vite apps/web --mode demo",
     "web:build": "vite build apps/web",
-    "cli": "node --import tsx apps/cli/src/index.ts",
-    "web": "node --import tsx apps/web/src/server.ts"
+    "cli": "node --import tsx apps/cli/src/index.ts"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
