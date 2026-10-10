@@ -31,12 +31,15 @@ type RateLimitConfig
 } from "../../../services/rate-limit/src/index";
 import { collectStatus } from "../../../services/status/src/index";
 import { parseVoiceIntent, type VoiceResponse } from "./voice";
+import { GhostRegistry, MIN_INTERVAL_MS, type Ghost, type GhostReport } from "../../../packages/core/src/ghost";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
 const MAX_BODY_BYTES = 1024 * 1024;
 const TASK_ROUTE = /^\/v1\/tasks\/([^/]+)(?:\/(approve|reject|cancel|events))?$/;
 const EVENTS_PATH = /^\/v1\/tasks\/[^/]+\/events$/;
 const VOICE_PATH = /^\/v1\/voice$/;
+const GHOST_PATH = /^\/v1\/ghost$/;
+const GHOST_ID_PATH = /^\/v1\/ghost\/([^/]+)$/;
 const DEFAULT_CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const SSE_RETRY_MS = 2_000;
@@ -125,7 +128,7 @@ afterSeq: number;
 }
 
 type RouteResult =
-| [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | VoiceResponse]
+| [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | VoiceResponse | GhostReport | { ghosts: Ghost[] }]
 | EventStreamRequest;
 
 const AUDIT_ORDERS = ["asc", "desc"] as const;
@@ -350,7 +353,8 @@ async function route(
 orchestrator: KhanOrchestrator,
 req: IncomingMessage,
 status: () => StatusResponse,
-actor: Actor
+actor: Actor,
+ghosts: GhostRegistry
 ): Promise<RouteResult> {
 const method = req.method ?? "GET";
 const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
@@ -439,6 +443,60 @@ throw new HttpError(422, "unrecognized_utterance", `Could not understand: "${utt
 }
 // ── End Phase 6 ──────────────────────────────────────────────
 
+  // ── Phase 7a: Ghost Mode ───────────────────────────────────────────────────
+  if (GHOST_PATH.test(pathname)) {
+    if (method === "GET") return [200, { ghosts: ghosts.list() }];
+    if (method !== "POST") throw methodNotAllowed(["GET", "POST"]);
+
+    const body = asObject(await readJsonBody(req));
+    const goal = body.goal;
+    if (typeof goal !== "string" || !goal.trim()) {
+      throw new HttpError(400, "goal_required", "goal must be a non-empty string");
+    }
+    const schedule = body.schedule;
+    if (schedule === undefined || schedule === null) {
+      throw new HttpError(400, "schedule_required", "schedule is required");
+    }
+    if (typeof schedule !== "object" || (schedule as Record<string, unknown>).type !== "interval") {
+      throw new HttpError(400, "invalid_schedule", 'schedule.type must be "interval"');
+    }
+    // Checked here as well as in the registry, so the caller gets a 400 rather than a 500.
+    const ms = Number((schedule as Record<string, unknown>).ms);
+    if (!Number.isFinite(ms) || ms < MIN_INTERVAL_MS) {
+      throw new HttpError(400, "interval_too_short", `schedule.ms must be at least ${MIN_INTERVAL_MS}`);
+    }
+    return [201, ghosts.register(goal.trim(), { type: "interval", ms }, actor)];
+  }
+
+  const ghostMatch = GHOST_ID_PATH.exec(pathname);
+  if (ghostMatch) {
+    let ghostId: string;
+    try {
+      ghostId = decodeURIComponent(ghostMatch[1]);
+    } catch {
+      throw new HttpError(400, "invalid_ghost_id");
+    }
+    try {
+      if (method === "GET") return [200, ghosts.get(ghostId)];
+      if (method === "DELETE") return [200, ghosts.remove(ghostId)];
+      if (method === "PATCH") {
+        const { action } = asObject(await readJsonBody(req));
+        if (action !== "pause" && action !== "resume") {
+          throw new HttpError(400, "invalid_action", 'action must be "pause" or "resume"');
+        }
+        return [200, action === "pause" ? ghosts.pause(ghostId) : ghosts.resume(ghostId)];
+      }
+      throw methodNotAllowed(["GET", "PATCH", "DELETE"]);
+    } catch (error) {
+      // The registry signals these by message; map them onto the API's error codes.
+      if (error instanceof HttpError) throw error;
+      if (error instanceof Error && error.message === "ghost_not_found") throw new HttpError(404, "ghost_not_found");
+      if (error instanceof Error && error.message === "ghost_deleted") throw new HttpError(409, "ghost_deleted");
+      throw error;
+    }
+  }
+  // ── End Phase 7a ───────────────────────────────────────────────────────────
+
 const match = TASK_ROUTE.exec(pathname);
 if (!match) throw new HttpError(404, "not_found");
 const taskId = decodeTaskId(match[1]);
@@ -505,6 +563,7 @@ const allowedOrigins = new Set(corsOrigins);
 const version = readVersion();
 const startedAt = clock();
 const limiter = new RateLimiter(rateLimits, clock);
+  const ghostRegistry = new GhostRegistry(orchestrator);
 const status = () =>
 collectStatus({
 service: SERVICE_NAME,
@@ -524,7 +583,7 @@ if (req.method === "OPTIONS") {
 const preflight = Object.keys(cors).length
 ? {
 ...cors,
-"Access-Control-Allow-Methods": "GET, POST",
+"Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE",
 "Access-Control-Allow-Headers": "Content-Type, Authorization",
 "Access-Control-Max-Age": "600"
 }
@@ -574,7 +633,7 @@ if (byKey && (!decision || byKey.remaining < decision.remaining)) decision = byK
 }
 if (decision) Object.assign(headers, rateHeaders(decision));
 
-route(orchestrator, req, status, actor).then(
+route(orchestrator, req, status, actor, ghostRegistry).then(
 (result) => {
 if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
 else send(res, result[0], result[1], headers);
