@@ -20,12 +20,16 @@ export type VoiceIntent =
  * First match wins; capture group 1 becomes the goal string.
  */
 const NEW_TASK_PATTERNS: RegExp[] = [
-  // "Hey KHAN, create a task to / run / execute / start / build / do <goal>"
-  /^(?:hey\s+khan[,!\s]+)(?:create a task to|run|execute|start|build|do)\s+(.+)/i,
-  // "Hey KHAN, <anything else>" — bare delegation
+  // Scaffolding that only announces a task. It is dropped, because the goal follows it:
+  // "create a task to write unit tests" is a request for the goal "write unit tests".
+  /^(?:hey\s+khan[,!\s]+)?create a task to\s+(.+)/i,
+  /^new task[:\s]+(.+)/i,
+  // "Hey KHAN, <goal>" — bare delegation. Everything after the wake word is the goal,
+  // verb included: the goal of "Hey KHAN, build the dashboard" is "build the dashboard",
+  // not "the dashboard", which would tell the orchestrator nothing about what to do.
   /^(?:hey\s+khan[,!\s]+)(.+)/i,
-  // No wake word — explicit task verbs
-  /^(?:create a task to|new task[:\s]+|execute|run|start|build)\s+(.+)/i,
+  // No wake word, so a leading task verb is the only signal — and it is part of the goal.
+  /^((?:execute|run|start|build)\s+.+)/i,
 ];
 
 const APPROVE_RE =
