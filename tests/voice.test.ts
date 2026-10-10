@@ -6,6 +6,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { parseVoiceIntent } from "../apps/api/src/voice";
+import type { KhanOrchestrator } from "../services/orchestrator/src/orchestrator";
 
 // ─── Unit tests: parseVoiceIntent ─────────────────────────────────────────────
 
@@ -168,19 +169,41 @@ function request(
   });
 }
 
+/** The permission policy marks this external-risk, so the task stops at the approval gate. */
+const GATED_GOAL = "Implement the fix and push the changes to GitHub.";
+
 describe("POST /v1/voice", () => {
   let server: http.Server;
+  let orchestrator: KhanOrchestrator;
 
   before(async () => {
     // Dynamically import the server factory — env vars (from --env-file) are already set
     const { createKhanApiServer } = await import("../apps/api/src/index.js");
-    server = createKhanApiServer();
+    const { KhanOrchestrator } = await import("../services/orchestrator/src/orchestrator.js");
+    // Held onto so the approval tests can wait for the gate instead of racing it.
+    orchestrator = new KhanOrchestrator();
+    server = createKhanApiServer(orchestrator);
     await new Promise<void>((res) => server.listen(0, "127.0.0.1", res));
   });
 
   after(() => {
     server.close();
   });
+
+  /** Creates a task and waits until it pauses at the approval gate. */
+  async function createGatedTask(): Promise<string> {
+    const created = await request(
+      server,
+      "POST",
+      "/v1/tasks",
+      { goal: GATED_GOAL, projectId: "voice-test" }
+    );
+    assert.equal(created.status, 201);
+    const taskId = (created.body as { task?: { id?: string } }).task?.id;
+    assert.ok(typeof taskId === "string" && taskId.length > 0);
+    await orchestrator.whenSettled(taskId);
+    return taskId;
+  }
 
   it("new_task utterance creates a task and returns 201", async () => {
     const { status, body } = await request(
@@ -196,93 +219,50 @@ describe("POST /v1/voice", () => {
     assert.equal(b.goal, "build the monitoring dashboard");
   });
 
-  it("approve utterance with existing taskId returns 202 or 409", async () => {
-    // Create a task first to have a real ID
-    const create = await request(
-      server,
-      "POST",
-      "/v1/tasks",
-      { goal: "approve test task", projectId: "voice-test" }
-    );
-    assert.equal(create.status, 201);
-    const taskId = (create.body as { task?: { id?: string } }).task?.id;
-    assert.ok(typeof taskId === "string" && taskId.length > 0);
-
+  it("approve utterance resumes a task waiting at the gate", async () => {
+    const taskId = await createGatedTask();
     const { status, body } = await request(
       server,
       "POST",
       "/v1/voice",
       { utterance: "approve", taskId }
     );
-    // 202 if task is in waiting_approval; 409 if orchestrator rejects the state transition
-    assert.ok(
-      status === 202 || status === 409,
-      `Expected 202 or 409, got ${status}`
-    );
+    assert.equal(status, 202);
     const b = body as Record<string, unknown>;
     assert.equal(b.intent, "approve");
+    assert.equal(b.taskId, taskId);
   });
 
-  it("reject utterance with taskId returns 200 or 409", async () => {
-    const create = await request(
-      server,
-      "POST",
-      "/v1/tasks",
-      { goal: "reject test task", projectId: "voice-test" }
-    );
-    assert.equal(create.status, 201);
-    const taskId = (create.body as { task?: { id?: string } }).task?.id;
-    assert.ok(typeof taskId === "string");
-
+  it("reject utterance rejects a task waiting at the gate", async () => {
+    const taskId = await createGatedTask();
     const { status, body } = await request(
       server,
       "POST",
       "/v1/voice",
       { utterance: "no, bad idea", taskId }
     );
-    assert.ok(
-      status === 200 || status === 409,
-      `Expected 200 or 409, got ${status}`
-    );
+    assert.equal(status, 200);
     const b = body as Record<string, unknown>;
     assert.equal(b.intent, "reject");
+    assert.equal(b.taskId, taskId);
   });
 
-  it("cancel utterance with taskId returns 200 or 409", async () => {
-    const create = await request(
-      server,
-      "POST",
-      "/v1/tasks",
-      { goal: "cancel test task", projectId: "voice-test" }
-    );
-    assert.equal(create.status, 201);
-    const taskId = (create.body as { task?: { id?: string } }).task?.id;
-    assert.ok(typeof taskId === "string");
-
+  it("cancel utterance cancels a task waiting at the gate", async () => {
+    const taskId = await createGatedTask();
     const { status, body } = await request(
       server,
       "POST",
       "/v1/voice",
       { utterance: "cancel", taskId }
     );
-    assert.ok(
-      status === 200 || status === 409,
-      `Expected 200 or 409, got ${status}`
-    );
+    assert.equal(status, 200);
     const b = body as Record<string, unknown>;
     assert.equal(b.intent, "cancel");
+    assert.equal(b.taskId, taskId);
   });
 
   it("status utterance with taskId returns 200", async () => {
-    const create = await request(
-      server,
-      "POST",
-      "/v1/tasks",
-      { goal: "status check task", projectId: "voice-test" }
-    );
-    assert.equal(create.status, 201);
-    const taskId = (create.body as { task?: { id?: string } }).task?.id;
-    assert.ok(typeof taskId === "string");
+    const taskId = await createGatedTask();
 
     const { status, body } = await request(
       server,
