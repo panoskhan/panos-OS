@@ -2,42 +2,17 @@
  * PANOS-OS Phase 7a — Ghost Mode
  * Background agent registry: register standing goals that fire automatically
  * on a schedule without requiring a human "Hey KHAN" prompt each time.
+ *
+ * The shapes live in packages/contracts and are re-exported here, so a browser can import the
+ * contract without pulling in the node:* modules this file needs to own timers and a data file.
  */
 
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { MIN_INTERVAL_MS, type Ghost, type GhostReport, type GhostSchedule } from "../../contracts/src/ghost";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-/** The only schedule type for now; cron support planned for Phase 7b */
-export interface IntervalSchedule {
-  type: "interval";
-  /** Milliseconds between automatic firings (minimum 5 000) */
-  ms: number;
-}
-
-export type GhostSchedule = IntervalSchedule;
-
-export type GhostStatus = "active" | "paused" | "deleted";
-
-export interface Ghost {
-  id: string;
-  goal: string;
-  schedule: GhostSchedule;
-  /** Actor who registered this ghost (flows through to audit log) */
-  actor: string;
-  status: GhostStatus;
-  createdAt: string;
-  /** ISO timestamp of the most recent automatic firing */
-  lastFiredAt?: string;
-  /** Running count of successful firings */
-  fireCount: number;
-}
-
-export interface GhostReport {
-  ghost: Ghost;
-}
+export * from "../../contracts/src/ghost";
 
 // ─── Minimal orchestrator interface ──────────────────────────────────────────
 
@@ -47,8 +22,6 @@ export interface GhostOrchestrator {
 }
 
 // ─── GhostRegistry ───────────────────────────────────────────────────────────
-
-export const MIN_INTERVAL_MS = 5_000; // 5 s — prevents accidental tight loops in production
 
 export class GhostRegistry {
   private readonly ghosts = new Map<string, Ghost>();
