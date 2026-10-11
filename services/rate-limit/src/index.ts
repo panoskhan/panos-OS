@@ -60,6 +60,8 @@ export function rateLimitsFromEnv(env: NodeJS.ProcessEnv = process.env): RateLim
 export function classify(method: string, pathname: string): RateClass {
   if (pathname === "/v1/audit") return "audit";
   if (method === "POST" && pathname === "/v1/tasks") return "tasks";
+  // One swarm starts several tasks, so it is charged to the same bucket as creating them one by one.
+  if (method === "POST" && pathname === "/v1/swarm") return "tasks";
   return "read";
 }
 
