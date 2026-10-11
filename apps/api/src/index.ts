@@ -32,6 +32,7 @@ type RateLimitConfig
 import { collectStatus } from "../../../services/status/src/index";
 import { parseVoiceIntent, type VoiceResponse } from "./voice";
 import { GhostRegistry, MIN_INTERVAL_MS, type Ghost, type GhostReport } from "../../../packages/core/src/ghost";
+import { SwarmArena, SWARM_DEFAULT_SIZE, SWARM_MAX_SIZE, SWARM_MIN_SIZE, type Swarm, type SwarmReport } from "../../../packages/core/src/swarm";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -40,6 +41,8 @@ const EVENTS_PATH = /^\/v1\/tasks\/[^/]+\/events$/;
 const VOICE_PATH = /^\/v1\/voice$/;
 const GHOST_PATH = /^\/v1\/ghost$/;
 const GHOST_ID_PATH = /^\/v1\/ghost\/([^/]+)$/;
+const SWARM_PATH = /^\/v1\/swarm$/;
+const SWARM_ID_PATH = /^\/v1\/swarm\/([^/]+)$/;
 const DEFAULT_CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const SSE_RETRY_MS = 2_000;
@@ -66,6 +69,8 @@ auth?: ApiKeyAuth;
 * load each other's ghosts, which is what persistence across a restart is for and is wrong between tests.
 */
 ghosts?: GhostRegistry;
+/** The swarm arena. In memory only: a restart forgets finished swarms. Inject one to keep a test server's swarms its own. */
+swarms?: SwarmArena;
 /**
 * Who a request comes from, for rate limiting. Defaults to the socket's address. Override it only to trust a
 * reverse proxy's forwarded address (or in tests): anything else lets a caller pick its own bucket.
@@ -134,7 +139,7 @@ afterSeq: number;
 }
 
 type RouteResult =
-| [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | VoiceResponse | GhostReport | { ghosts: Ghost[] }]
+| [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | VoiceResponse | GhostReport | { ghosts: Ghost[] } | SwarmReport | { swarms: Swarm[] }]
 | EventStreamRequest;
 
 const AUDIT_ORDERS = ["asc", "desc"] as const;
@@ -360,7 +365,8 @@ orchestrator: KhanOrchestrator,
 req: IncomingMessage,
 status: () => StatusResponse,
 actor: Actor,
-ghosts: GhostRegistry
+ghosts: GhostRegistry,
+swarms: SwarmArena
 ): Promise<RouteResult> {
 const method = req.method ?? "GET";
 const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
@@ -503,6 +509,45 @@ throw new HttpError(422, "unrecognized_utterance", `Could not understand: "${utt
   }
   // ── End Phase 7a ───────────────────────────────────────────────────────────
 
+  // ── Phase 7c: Swarm Wars ───────────────────────────────────────────────────
+  if (SWARM_PATH.test(pathname)) {
+    if (method === "GET") return [200, { swarms: swarms.list() }];
+    if (method !== "POST") throw methodNotAllowed(["GET", "POST"]);
+
+    const body = asObject(await readJsonBody(req));
+    const problem = body.problem;
+    if (typeof problem !== "string" || !problem.trim()) {
+      throw new HttpError(400, "problem_required", "problem must be a non-empty string");
+    }
+    const size = body.size === undefined ? SWARM_DEFAULT_SIZE : Number(body.size);
+    try {
+      return [202, swarms.launch(problem, actor, size)];
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid_size") {
+        throw new HttpError(400, "invalid_size", `size must be a whole number from ${SWARM_MIN_SIZE} to ${SWARM_MAX_SIZE}`);
+      }
+      throw error;
+    }
+  }
+
+  const swarmMatch = SWARM_ID_PATH.exec(pathname);
+  if (swarmMatch) {
+    if (method !== "GET") throw methodNotAllowed(["GET"]);
+    let swarmId: string;
+    try {
+      swarmId = decodeURIComponent(swarmMatch[1]);
+    } catch {
+      throw new HttpError(400, "invalid_swarm_id");
+    }
+    try {
+      return [200, swarms.get(swarmId)];
+    } catch (error) {
+      if (error instanceof Error && error.message === "swarm_not_found") throw new HttpError(404, "swarm_not_found");
+      throw error;
+    }
+  }
+  // ── End Phase 7c ───────────────────────────────────────────────────────────
+
 const match = TASK_ROUTE.exec(pathname);
 if (!match) throw new HttpError(404, "not_found");
 const taskId = decodeTaskId(match[1]);
@@ -563,7 +608,8 @@ clock = Date.now,
 rateLimits = rateLimitsFromEnv(),
 auth = ApiKeyAuth.fromEnv(),
 clientAddress = clientIp,
-ghosts = new GhostRegistry(orchestrator, process.env.KHAN_GHOST_DIR ?? "data")
+ghosts = new GhostRegistry(orchestrator, process.env.KHAN_GHOST_DIR ?? "data"),
+swarms = new SwarmArena(orchestrator)
 }: KhanApiServerOptions = {}
 ) {
 const allowedOrigins = new Set(corsOrigins);
@@ -639,7 +685,7 @@ if (byKey && (!decision || byKey.remaining < decision.remaining)) decision = byK
 }
 if (decision) Object.assign(headers, rateHeaders(decision));
 
-route(orchestrator, req, status, actor, ghosts).then(
+route(orchestrator, req, status, actor, ghosts, swarms).then(
 (result) => {
 if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
 else send(res, result[0], result[1], headers);
