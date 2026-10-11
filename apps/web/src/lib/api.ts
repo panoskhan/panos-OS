@@ -8,6 +8,7 @@ import type {
   TaskEventsResponse,
   TaskResponse
 } from "../../../../packages/contracts/src/api";
+import type { Ghost, GhostReport, GhostSchedule } from "../../../../packages/contracts/src/ghost";
 
 export const DEFAULT_API_URL = "http://127.0.0.1:3001";
 export const UNAUTHORIZED_HINT = "the API needs a valid key: set VITE_API_KEY and reload";
@@ -52,6 +53,12 @@ export interface KhanApiClient {
   getTaskEvents(taskId: string): Promise<TaskEventsResponse>;
   /** URL of the task's live event stream (open it with EventSource). */
   eventsUrl(taskId: string): string;
+  /** Every ghost the registry still holds; retired ones are already filtered out (GET /v1/ghost). */
+  getGhosts(): Promise<{ ghosts: Ghost[] }>;
+  registerGhost(goal: string, schedule: GhostSchedule): Promise<GhostReport>;
+  pauseGhost(ghostId: string): Promise<GhostReport>;
+  resumeGhost(ghostId: string): Promise<GhostReport>;
+  removeGhost(ghostId: string): Promise<GhostReport>;
 }
 
 /**
@@ -61,7 +68,7 @@ export interface KhanApiClient {
 export function createApiClient(baseUrl: string = DEFAULT_API_URL, apiKey?: string): KhanApiClient {
   const root = baseUrl.replace(/\/+$/, "");
 
-  async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  async function request<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
@@ -85,6 +92,7 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL, apiKey?: stri
   }
 
   const taskPath = (taskId: string) => `/v1/tasks/${encodeURIComponent(taskId)}`;
+  const ghostPath = (ghostId: string) => `/v1/ghost/${encodeURIComponent(ghostId)}`;
   const decision = (reason?: string) => (reason ? { reason } : undefined);
 
   return {
@@ -103,7 +111,12 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL, apiKey?: stri
     rejectTask: (taskId, reason) => request<TaskResponse>("POST", `${taskPath(taskId)}/reject`, decision(reason)),
     cancelTask: (taskId, reason) => request<TaskResponse>("POST", `${taskPath(taskId)}/cancel`, decision(reason)),
     getTaskEvents: (taskId) => request<TaskEventsResponse>("GET", `${taskPath(taskId)}/events`),
-    eventsUrl: (taskId) => `${root}${taskPath(taskId)}/events${apiKey ? `?token=${encodeURIComponent(apiKey)}` : ""}`
+    eventsUrl: (taskId) => `${root}${taskPath(taskId)}/events${apiKey ? `?token=${encodeURIComponent(apiKey)}` : ""}`,
+    getGhosts: () => request<{ ghosts: Ghost[] }>("GET", "/v1/ghost"),
+    registerGhost: (goal, schedule) => request<GhostReport>("POST", "/v1/ghost", { goal, schedule }),
+    pauseGhost: (ghostId) => request<GhostReport>("PATCH", ghostPath(ghostId), { action: "pause" }),
+    resumeGhost: (ghostId) => request<GhostReport>("PATCH", ghostPath(ghostId), { action: "resume" }),
+    removeGhost: (ghostId) => request<GhostReport>("DELETE", ghostPath(ghostId))
   };
 }
 
