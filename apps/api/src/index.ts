@@ -61,6 +61,12 @@ rateLimits?: RateLimitConfig;
 /** API keys. Defaults to KHAN_API_KEYS; with none configured every request is accepted as "anonymous". */
 auth?: ApiKeyAuth;
 /**
+* The ghost registry, which persists to <dir>/ghosts.jsonl. Defaults to the KHAN_GHOST_DIR directory, else
+* "data". Inject one to keep a server's ghosts out of that shared file: two registries on one directory
+* load each other's ghosts, which is what persistence across a restart is for and is wrong between tests.
+*/
+ghosts?: GhostRegistry;
+/**
 * Who a request comes from, for rate limiting. Defaults to the socket's address. Override it only to trust a
 * reverse proxy's forwarded address (or in tests): anything else lets a caller pick its own bucket.
 */
@@ -556,14 +562,14 @@ retryMs = SSE_RETRY_MS,
 clock = Date.now,
 rateLimits = rateLimitsFromEnv(),
 auth = ApiKeyAuth.fromEnv(),
-clientAddress = clientIp
+clientAddress = clientIp,
+ghosts = new GhostRegistry(orchestrator, process.env.KHAN_GHOST_DIR ?? "data")
 }: KhanApiServerOptions = {}
 ) {
 const allowedOrigins = new Set(corsOrigins);
 const version = readVersion();
 const startedAt = clock();
 const limiter = new RateLimiter(rateLimits, clock);
-  const ghostRegistry = new GhostRegistry(orchestrator);
 const status = () =>
 collectStatus({
 service: SERVICE_NAME,
@@ -633,7 +639,7 @@ if (byKey && (!decision || byKey.remaining < decision.remaining)) decision = byK
 }
 if (decision) Object.assign(headers, rateHeaders(decision));
 
-route(orchestrator, req, status, actor, ghostRegistry).then(
+route(orchestrator, req, status, actor, ghosts).then(
 (result) => {
 if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
 else send(res, result[0], result[1], headers);
