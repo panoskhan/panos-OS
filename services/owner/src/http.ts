@@ -10,7 +10,7 @@ export async function ownerRoute(req: IncomingMessage, res: ServerResponse, work
     let text = "";
     for await (const chunk of req) {
       text += chunk.toString();
-      if (Buffer.byteLength(text) > 1500000) throw new OwnerError(413, "Upload is too large.");
+      if (Buffer.byteLength(text) > (path === "/owner-api/backup" ? 10000000 : 1500000)) throw new OwnerError(413, "Upload is too large.");
     }
     try { const value = JSON.parse(text || "{}"); if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(); return value as Record<string, unknown>; }
     catch { throw new OwnerError(400, "Send a JSON object."); }
@@ -18,6 +18,8 @@ export async function ownerRoute(req: IncomingMessage, res: ServerResponse, work
   try {
     if (path === "/owner-api/overview" && method === "GET") return send(200, { ...workspace.overview(), tasks: tasks.all().map(t => t.report) });
     if (path === "/owner-api/model" && method === "PUT") return send(200, workspace.configure(await body()));
+    if (path === "/owner-api/model/test" && method === "POST") return send(200, await workspace.testConnection());
+    if (path === "/owner-api/backup" && method === "POST") return send(200, workspace.restore(await body()));
     if (path === "/owner-api/backup" && method === "GET") {
       res.setHeader("Content-Disposition", 'attachment; filename="panos-os-projects.json"');
       return send(200, workspace.backup());

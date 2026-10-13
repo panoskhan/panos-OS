@@ -51,17 +51,21 @@ export class OwnerWorkspace {
     const project: Project = { id: randomUUID(), name: name.trim(), files: [], suggestions: [], updatedAt: new Date().toISOString() };
     this.state.projects.push(project); this.save(); return this.get(project.id);
   }
-  upload(id: string, input: unknown) {
-    this.get(id);
+  private validateFiles(input: unknown) {
     if (!Array.isArray(input) || input.length > 50) throw new OwnerError(400, "Upload up to 50 text files.");
     const files: ProjectFile[] = input.map(f => {
       if (!f || typeof f.path !== "string" || typeof f.content !== "string") throw new OwnerError(400, "Files must have a path and text content.");
       const parts = f.path.split("/");
-    if (f.path.length > 200 || parts.some((p: string) => !p || p === "." || p === ".." || /^\.env|^(\.git|node_modules)$/.test(p)) || /[\\\x00-\x1f]/.test(f.path)) throw new OwnerError(400, "Use relative paths and exclude secrets and dependency folders.");
+      if (f.path.length > 200 || parts.some((p: string) => !p || p === "." || p === ".." || /^\.env|^(\.git|node_modules)$/.test(p)) || /[\\\x00-\x1f]/.test(f.path)) throw new OwnerError(400, "Use relative paths and exclude secrets and dependency folders.");
       if (Buffer.byteLength(f.content) > 100000 || f.content.includes("\0")) throw new OwnerError(400, "Each file must be text and under 100 KB.");
       return { path: f.path, content: f.content };
     });
     if (new Set(files.map(f => f.path)).size !== files.length || Buffer.byteLength(JSON.stringify(files)) > 1000000) throw new OwnerError(400, "Use unique paths and keep the project under 1 MB.");
+    return files;
+  }
+  upload(id: string, input: unknown) {
+    this.get(id);
+    const files = this.validateFiles(input);
     const project = this.state.projects.find(p => p.id === id)!;
     project.files = files; project.updatedAt = new Date().toISOString(); this.save(); return this.get(id);
   }
@@ -114,4 +118,27 @@ export class OwnerWorkspace {
     return this.get(id);
   }
   backup() { return { version: 1, projects: structuredClone(this.state.projects), usage: { ...this.state.usage } }; }
+  restore(input: Record<string, unknown>) {
+    if (input.version !== 1 || !Array.isArray(input.projects) || input.projects.length > 100) throw new OwnerError(400, "Choose a version 1 Panos OS project backup with up to 100 projects.");
+    const restored: Project[] = input.projects.map(p => {
+      if (!p || typeof p.id !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(p.id) || typeof p.name !== "string" || !p.name.trim() || p.name.length > 100 || typeof p.updatedAt !== "string" || !Number.isFinite(Date.parse(p.updatedAt))) throw new OwnerError(400, "The backup has invalid project details.");
+      if (!Array.isArray(p.suggestions) || p.suggestions.length > 20) throw new OwnerError(400, "The backup has invalid suggestions.");
+      const suggestions = p.suggestions.map((s: { at: unknown; text: unknown }) => {
+        if (!s || typeof s.at !== "string" || !Number.isFinite(Date.parse(s.at)) || typeof s.text !== "string" || s.text.length > 40000) throw new OwnerError(400, "The backup has invalid suggestions.");
+        return { at: s.at, text: s.text };
+      });
+      return { id: p.id, name: p.name.trim(), updatedAt: p.updatedAt, files: this.validateFiles(p.files), suggestions };
+    });
+    if (new Set(restored.map(p => p.id)).size !== restored.length) throw new OwnerError(400, "The backup contains duplicate project IDs.");
+    const additions = restored.filter(p => !this.state.projects.some(current => current.id === p.id));
+    if (this.state.projects.length + additions.length > 100) throw new OwnerError(400, "Restoring would exceed the 100-project limit.");
+    const previous = this.state.projects;
+    this.state.projects = [...previous, ...additions];
+    try { this.save(); } catch (e) { this.state.projects = previous; throw e; }
+    return { imported: additions.length, skipped: restored.length - additions.length };
+  }
+  async testConnection() {
+    const response = await this.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 256 });
+    return { connected: true, model: response.model };
+  }
 }

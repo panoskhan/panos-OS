@@ -83,3 +83,52 @@ test("model failures consume the persisted limit and do not reveal echoed creden
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("backup import restores missing projects, keeps existing projects and never resets model settings or usage", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "panos-import-"));
+  try {
+    const owner = new OwnerWorkspace(directory);
+    const project = owner.create("Restorable project");
+    owner.upload(project.id, [{ path: "hello.txt", content: "original" }]);
+    const backup = owner.backup();
+    owner.configure({ apiKey: "private-test-key", dailyLimit: 4, enabled: false });
+    owner.remove(project.id);
+    const restored = owner.restore({ ...backup, model: { apiKey: "injected-key", enabled: true }, usage: { calls: 0 } });
+    assert.deepEqual(restored, { imported: 1, skipped: 0 });
+    assert.equal(owner.overview().model.enabled, false);
+    assert.equal(owner.overview().model.dailyLimit, 4);
+    assert.equal(owner.overview().model.configured, true);
+    owner.upload(project.id, [{ path: "hello.txt", content: "newer live file" }]);
+    assert.deepEqual(owner.restore(backup), { imported: 0, skipped: 1 });
+    assert.equal(owner.get(project.id).files[0].content, "newer live file");
+    assert.equal(new OwnerWorkspace(directory).get(project.id).files[0].content, "newer live file");
+    const invalid = structuredClone(backup);
+    invalid.projects[0].files[0].path = "../secret";
+    assert.throws(() => owner.restore(invalid), OwnerError);
+    assert.equal(owner.get(project.id).files[0].content, "newer live file", "failed import is atomic");
+    assert.throws(() => owner.restore({ ...backup, projects: [backup.projects[0], backup.projects[0]] }), OwnerError);
+    assert.throws(() => owner.restore({ ...backup, version: 999 }), OwnerError);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("testing an AI connection requires enablement and consumes the same budget as other calls", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "panos-model-test-"));
+  const fake = createServer((req, res) => {
+    let raw = ""; req.on("data", chunk => raw += chunk); req.on("end", () => {
+      assert.equal(JSON.parse(raw).max_tokens, 256);
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: "ready" } }] }));
+    });
+  });
+  await new Promise<void>(resolve => fake.listen(0, "127.0.0.1", resolve));
+  try {
+    const owner = new OwnerWorkspace(directory, (apiKey, model) => new ModelClient({ apiKey, model, baseUrl: `http://127.0.0.1:${(fake.address() as AddressInfo).port}`, timeoutMs: 1000 }, Date.now, []));
+    await assert.rejects(owner.testConnection(), e => e instanceof OwnerError && e.status === 409);
+    owner.configure({ apiKey: "fake-key", enabled: true, dailyLimit: 1 });
+    assert.equal((await owner.testConnection()).connected, true);
+    assert.equal(owner.overview().usage.calls, 1);
+    await assert.rejects(owner.testConnection(), e => e instanceof OwnerError && e.status === 429);
+  } finally {
+    fake.closeAllConnections(); await new Promise<void>(resolve => fake.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
