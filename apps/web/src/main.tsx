@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { ApprovalPanel } from "./components/ApprovalPanel";
 import { EventTimeline } from "./components/EventTimeline";
 import { ExecutionGraph } from "./components/ExecutionGraph";
+import { GhostPanel } from "./components/GhostPanel";
 import { GoalInput } from "./components/GoalInput";
 import { OrbitalCanvas } from "./components/OrbitalCanvas";
 import { QaResult } from "./components/QaResult";
@@ -10,6 +11,7 @@ import { RightRail } from "./components/RightRail";
 import { Sidebar } from "./components/Sidebar";
 import { SettingsPage } from "./components/SettingsPage";
 import { SystemReport } from "./components/SystemReport";
+import { useGhosts } from "./hooks/useGhosts";
 import { useSystemStatus } from "./hooks/useSystemStatus";
 import { isTerminal, useTask } from "./hooks/useTask";
 import { useTaskHistory } from "./hooks/useTaskHistory";
@@ -33,6 +35,7 @@ function App() {
   const apiState = status.state;
   const degraded = status.report?.status === "degraded";
   const tasks = useTaskHistory(report);
+  const ghosts = useGhosts();
 
   const avatar = avatarState(report, pending);
   const active = useMemo(() => activeAgents(report, pending), [report, pending]);
@@ -91,6 +94,8 @@ function App() {
           <ExecutionGraph report={report} />
           <EventTimeline taskId={report?.task.id} events={events} />
         </div>
+
+        <GhostPanel ghosts={ghosts} />
 
         <SystemReport report={report} />
 
