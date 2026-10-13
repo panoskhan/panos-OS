@@ -76,11 +76,18 @@ test("public demo opens without credentials but blocks settings, automation and 
     }
     const response = await fetch(base + "/v1/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal: "Analyze this project" }) });
     assert.equal(response.status, 201);
+    const cookie = response.headers.get("set-cookie")!.split(";")[0];
+    assert.match(response.headers.get("set-cookie")!, /HttpOnly; SameSite=Lax/);
     const { task } = await response.json() as { task: { id: string } };
-    const stream = await fetch(base + `/v1/tasks/${task.id}/events`, { headers: { Accept: "text/event-stream" } });
+    const stranger = await fetch(base + `/v1/tasks/${task.id}`);
+    assert.equal(stranger.status, 404, "another visitor cannot read this task");
+    const strangerCookie = stranger.headers.get("set-cookie")!.split(";")[0];
+    assert.equal((await fetch(base + `/v1/tasks/${task.id}/events`, { headers: { Cookie: strangerCookie, Accept: "text/event-stream" } })).status, 404, "another visitor cannot stream this task");
+    assert.equal((await fetch(base + `/v1/tasks/${task.id}`, { headers: { Cookie: "panos_demo=" + "a".repeat(48) } })).status, 404, "an invented cookie cannot select the task's session");
+    const stream = await fetch(base + `/v1/tasks/${task.id}/events`, { headers: { Cookie: cookie, Accept: "text/event-stream" } });
     assert.equal(stream.status, 200);
     assert.match(await stream.text(), /event: end/);
-    const report = await (await fetch(base + `/v1/tasks/${task.id}`)).json() as { task: { status: string }; verification: { passed: boolean } };
+    const report = await (await fetch(base + `/v1/tasks/${task.id}`, { headers: { Cookie: cookie } })).json() as { task: { status: string }; verification: { passed: boolean } };
     assert.equal(report.task.status, "completed");
     assert.equal(report.verification.passed, true);
     const headers = { Authorization: `Basic ${Buffer.from("panos:test-only-password-12345").toString("base64")}` };

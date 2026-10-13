@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
@@ -22,6 +22,8 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
   const orchestrator = new KhanOrchestrator(undefined, undefined, undefined, undefined, audit);
   // Every API request passes the site's authentication gate first. No key is shipped in browser assets.
   const api = createKhanApiServer(orchestrator, { auth: ApiKeyAuth.disabled() });
+  const sessions = new Map<string, { api: ReturnType<typeof createKhanApiServer>; expires: number }>();
+  const sessionLifetime = 60 * 60 * 1000;
   const site = createServer((req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "same-origin");
@@ -57,8 +59,27 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
         if (new URL(req.headers.origin).host !== req.headers.host) { res.writeHead(403).end(); return; }
       } catch { res.writeHead(403).end(); return; }
     }
-    if (pathname === "/v1" || pathname.startsWith("/v1/")) {
-      api.emit("request", req, res);
+    let visitorApi = api;
+    if (publicDemo && !authenticated && (pathname === "/" || publicApi)) {
+      const now = Date.now();
+      for (const [id, session] of sessions) if (session.expires <= now) sessions.delete(id);
+      let id = /(?:^|;\s*)panos_demo=([a-f0-9]{48})(?:;|$)/.exec(req.headers.cookie ?? "")?.[1];
+      let session = id ? sessions.get(id) : undefined;
+      if (!session) {
+        if (sessions.size >= 500) {
+          res.writeHead(503, { "Content-Type": "application/json", "Retry-After": "60" }).end('{"error":"demo_busy","detail":"The demo is busy. Please try again later."}');
+          return;
+        }
+        id = randomBytes(24).toString("hex");
+        session = { api: createKhanApiServer(new KhanOrchestrator(), { auth: ApiKeyAuth.disabled() }), expires: now + sessionLifetime };
+        sessions.set(id, session);
+        const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
+        res.setHeader("Set-Cookie", `panos_demo=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600${secure}`);
+      }
+      visitorApi = session.api;
+    }
+    if (apiPath) {
+      visitorApi.emit("request", req, res);
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405, { Allow: "GET, HEAD" }).end(); return; }

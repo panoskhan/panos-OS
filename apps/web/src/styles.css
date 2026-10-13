@@ -294,6 +294,12 @@ ul, ol { list-style: none; margin: 0; padding: 0; }
   .step[data-status="running"] .step-num, .avatar[data-tone="active"] small i { animation: none; }
 }
 
+.guided-demos { margin-bottom: 20px; }
+.guided-demos h2 { margin-bottom: 8px; }
+.guided-demos p { color: var(--muted); margin-bottom: 12px; }
+.guided-demos .chip { display: flex; flex-direction: column; gap: 6px; white-space: normal; text-align: left; padding: 12px; }
+.guided-demos .chip span { color: var(--muted); font-size: 12px; }
+
 /* ---------- Settings Page ---------- */
 .settings-page {
   grid-column: 2; /* sits in the main column, beside the sidebar */

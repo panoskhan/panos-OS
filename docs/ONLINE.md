@@ -13,6 +13,8 @@ This remains a prototype: agents simulate work and model integration is not conf
 
 ## Verify a deployment
 
+Public visitors receive an HttpOnly session cookie when opening the homepage or making their first allowed API request. Each session uses its own in-memory orchestrator, task store and audit log, so another visitor cannot read a task or its event stream even with its task ID. Sessions expire after one hour and are lost on restart; remembered browser history drops unavailable tasks. The demo admits up to 500 simultaneous sessions. Guided walkthrough buttons start analysis, testing, or an approval-gated demonstration without enabling protected actions.
+
 Confirm `/health` returns `{"status":"ok","service":"panos-os-online"}`. Opening `/` without credentials must prompt for a password. After signing in, the app should load system status and complete a read-only task. Check a task requiring approval pauses and resumes after your decision. The event stream must use the hosted site's `/v1/tasks/.../events` URL. Do not consider the deployment validated from the health check alone.
 
 ## Local deployment check
