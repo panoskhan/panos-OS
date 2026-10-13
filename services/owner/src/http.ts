@@ -7,11 +7,14 @@ export async function ownerRoute(req: IncomingMessage, res: ServerResponse, work
   const method = req.method;
   const send = (status: number, body: unknown) => res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
   const body = async () => {
-    let text = "";
+    const chunks: Buffer[] = [];
+    let size = 0;
     for await (const chunk of req) {
-      text += chunk.toString();
-      if (Buffer.byteLength(text) > (path === "/owner-api/backup" ? 10000000 : 1500000)) throw new OwnerError(413, "Upload is too large.");
+      size += chunk.length;
+      if (size > (path === "/owner-api/backup" ? 10000000 : 1500000)) throw new OwnerError(413, "Upload is too large.");
+      chunks.push(chunk);
     }
+    const text = Buffer.concat(chunks).toString("utf8");
     try { const value = JSON.parse(text || "{}"); if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(); return value as Record<string, unknown>; }
     catch { throw new OwnerError(400, "Send a JSON object."); }
   };

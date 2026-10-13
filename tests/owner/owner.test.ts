@@ -7,6 +7,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { OwnerWorkspace, OwnerError } from "../../services/owner/src/index";
 import { ModelClient } from "../../services/model-router/src/client";
+import { ownerRoute } from "../../services/owner/src/http";
+import { TaskStore } from "../../services/orchestrator/src/task-store";
+import { Readable } from "node:stream";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 test("project uploads, suggestions and limits survive restart while responses and backups omit the model key", async () => {
   const directory = mkdtempSync(join(tmpdir(), "panos-owner-"));
@@ -131,4 +135,21 @@ test("testing an AI connection requires enablement and consumes the same budget 
     fake.closeAllConnections(); await new Promise<void>(resolve => fake.close(() => resolve()));
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("HTTP uploads preserve Greek text when UTF-8 characters cross incoming chunk boundaries", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "panos-unicode-"));
+  try {
+    const owner = new OwnerWorkspace(directory);
+    const project = owner.create("Ελληνικό έργο");
+    const content = "Καλημέρα από την Ελλάδα 🇬🇷";
+    const payload = Buffer.from(JSON.stringify({ files: [{ path: "hello.txt", content }] }));
+    const req = Readable.from([...payload].map(byte => Buffer.from([byte]))) as unknown as IncomingMessage;
+    req.url = `/owner-api/projects/${project.id}/files`; req.method = "PUT";
+    let status = 0;
+    const res = { writeHead(code: number) { status = code; return this; }, end() {} } as unknown as ServerResponse;
+    await ownerRoute(req, res, owner, new TaskStore());
+    assert.equal(status, 200);
+    assert.equal(owner.get(project.id).files[0].content, content);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
