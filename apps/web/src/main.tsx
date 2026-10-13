@@ -58,6 +58,7 @@ function App() {
       {page === "settings" && <SettingsPage />}
 
       <main className="main" style={page !== "home" ? { display: "none" } : undefined}>
+        {import.meta.env.VITE_PUBLIC_DEMO === "true" && <p role="note">Public demo · Agents simulate work. Try an analysis task. Settings, approvals, and background automation are reserved for the site owner. Do not enter private information.</p>}
         <header className="topbar">
           <p className="tagline">Understand · Plan · Act · Verify</p>
           <div className="core-badge" data-state={degraded ? "degraded" : apiState} title={api.baseUrl}>
@@ -82,20 +83,22 @@ function App() {
         )}
 
         {/* A blocking decision goes first: it must be visible without scrolling. */}
-        <ApprovalPanel
+        {import.meta.env.VITE_PUBLIC_DEMO === "true" ? (
+          report?.task.status === "waiting_approval" && <p role="status">This task needs owner approval. Public demo tasks cannot perform protected actions. Try an analysis task instead.</p>
+        ) : <ApprovalPanel
           key={report?.task.id}
           report={report}
           pending={pending}
           onApprove={approve}
           onReject={reject}
-        />
+        />}
 
         <div className="duo">
           <ExecutionGraph report={report} />
           <EventTimeline taskId={report?.task.id} events={events} />
         </div>
 
-        <GhostPanel ghosts={ghosts} />
+        {import.meta.env.VITE_PUBLIC_DEMO !== "true" && <GhostPanel ghosts={ghosts} />}
 
         <SystemReport report={report} />
 

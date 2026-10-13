@@ -7,7 +7,7 @@ The Render blueprint runs the existing React app and API together over HTTPS. Th
 3. Set `SITE_PASSWORD` securely in Render to a unique password of at least 16 characters. Never put it in the repository or a `VITE_` variable.
 4. Deploy, then open the HTTPS address Render assigns. Sign in with username **panos** and your password.
 
-The service refuses startup without a suitable password. The health endpoint is public; the app and API require authentication. Render supplies HTTPS; use the public service only through HTTPS.
+The blueprint enables a public demo: anyone can open the app, create simulated tasks, and follow their progress. Settings, audit access, approvals, cancellations, background automation, and other API routes require owner authentication. The demo hides settings and approval controls. The service still requires a suitable owner password at startup. Render supplies HTTPS; use the public service only through HTTPS. Set PUBLIC_DEMO=false and rebuild without VITE_PUBLIC_DEMO=true for the private interface.
 
 This remains a prototype: agents simulate work and model integration is not configured. Every person with the site password shares full access. Tasks are held in memory. The free plan can sleep and its filesystem is ephemeral, so restarts lose task state and may lose audit/ghost files. For retained files, use a paid service with a persistent disk and set `KHAN_AUDIT_FILE` and `KHAN_GHOST_DIR` to that disk. Persistent storage does not make in-memory tasks durable.
 

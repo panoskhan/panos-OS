@@ -14,7 +14,7 @@ const mime: Record<string, string> = {
 };
 const digest = (value: string) => createHash("sha256").update(value).digest();
 
-export function createOnlineServer(password: string, root = resolve("apps/web/dist")) {
+export function createOnlineServer(password: string, root = resolve("apps/web/dist"), publicDemo = false) {
   if (password.length < 16) throw new Error("SITE_PASSWORD must contain at least 16 characters.");
   if (!existsSync(resolve(root, "index.html"))) throw new Error("Build the web app before starting the online server.");
   const expected = digest(`panos:${password}`);
@@ -36,7 +36,19 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
     }
     const header = req.headers.authorization ?? "";
     const credential = header.startsWith("Basic ") ? Buffer.from(header.slice(6), "base64").toString("utf8") : "";
-    if (!timingSafeEqual(digest(credential), expected)) {
+    const authenticated = timingSafeEqual(digest(credential), expected);
+    const publicApi = (req.method === "GET" && (pathname === "/v1/status" || /^\/v1\/tasks\/[^/]+(?:\/events)?$/.test(pathname)))
+      || (req.method === "POST" && pathname === "/v1/tasks");
+    const apiPath = pathname === "/v1" || pathname.startsWith("/v1/");
+    if (publicDemo && !authenticated && pathname === "/v1/ghost" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" }).end('{"ghosts":[]}');
+      return;
+    }
+    if (publicDemo && !authenticated && apiPath && !publicApi) {
+      res.writeHead(403, { "Content-Type": "application/json" }).end('{"error":"demo_restricted","detail":"This action is available only to the site owner."}');
+      return;
+    }
+    if (!authenticated && !publicDemo) {
       res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Panos OS", charset="UTF-8"' }).end("Sign in with username panos.");
       return;
     }
@@ -64,7 +76,7 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
 }
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/web/src/online-server.ts")) {
-  const server = createOnlineServer(process.env.SITE_PASSWORD ?? "");
+  const server = createOnlineServer(process.env.SITE_PASSWORD ?? "", undefined, process.env.PUBLIC_DEMO === "true");
   const port = Number(process.env.PORT ?? 3000);
   server.listen(port, "0.0.0.0", () => console.log(`Panos OS online server listening on port ${port}`));
 }

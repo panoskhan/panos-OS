@@ -53,3 +53,41 @@ test("online host protects the app and API, serves assets, and completes a task 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("public demo opens without credentials but blocks settings, automation and approvals", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "panos-demo-"));
+  writeFileSync(join(dir, "index.html"), "<!doctype html><title>Public demo</title>");
+  const previous = process.env.KHAN_AUDIT_FILE;
+  process.env.KHAN_AUDIT_FILE = join(dir, "audit.jsonl");
+  const server = createOnlineServer("test-only-password-12345", dir, true);
+  if (previous === undefined) delete process.env.KHAN_AUDIT_FILE;
+  else process.env.KHAN_AUDIT_FILE = previous;
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    assert.equal((await fetch(base + "/")).status, 200);
+    assert.equal((await fetch(base + "/v1/status")).status, 200);
+    assert.deepEqual(await (await fetch(base + "/v1/ghost")).json(), { ghosts: [] });
+    for (const [method, path] of [["GET", "/v1/settings"], ["POST", "/v1/settings"], ["GET", "/v1/audit"], ["POST", "/v1/ghost"], ["POST", "/v1/swarm"], ["POST", "/v1/voice"], ["POST", "/v1/tasks/t/approve"], ["POST", "/v1/tasks/t/reject"], ["POST", "/v1/tasks/t/cancel"]]) {
+      const response = await fetch(base + path, { method });
+      assert.equal(response.status, 403, `${method} ${path}`);
+      assert.equal(response.headers.has("www-authenticate"), false);
+    }
+    const response = await fetch(base + "/v1/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal: "Analyze this project" }) });
+    assert.equal(response.status, 201);
+    const { task } = await response.json() as { task: { id: string } };
+    const stream = await fetch(base + `/v1/tasks/${task.id}/events`, { headers: { Accept: "text/event-stream" } });
+    assert.equal(stream.status, 200);
+    assert.match(await stream.text(), /event: end/);
+    const report = await (await fetch(base + `/v1/tasks/${task.id}`)).json() as { task: { status: string }; verification: { passed: boolean } };
+    assert.equal(report.task.status, "completed");
+    assert.equal(report.verification.passed, true);
+    const headers = { Authorization: `Basic ${Buffer.from("panos:test-only-password-12345").toString("base64")}` };
+    assert.equal((await fetch(base + "/v1/settings", { headers })).status, 200);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

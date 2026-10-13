@@ -99,7 +99,7 @@ export function Sidebar({ status, avatar, onHome, onNewTask, onHistory, onSettin
 
       <nav aria-label="Primary">
         <ul className="nav">
-          {NAV.map((item) => (
+          {NAV.filter(item => import.meta.env.VITE_PUBLIC_DEMO !== "true" || item.action !== "settings").map((item) => (
             <li key={item.label}>
               <button
                 type="button"
