@@ -2,6 +2,7 @@ import type { AgentResult } from "../../../packages/contracts/src/agent";
 import type { Actor, TaskEvent, TaskEventType } from "../../../packages/contracts/src/api";
 import type { VerificationResult } from "../../../agents/qa/src/index";
 import type { ExecutionReport } from "./orchestrator";
+import type { TaskPersistence } from "./task-persistence";
 
 /** Internal execution state for one task, including what is needed to resume it. */
 export interface TaskRecord {
@@ -25,16 +26,35 @@ export interface TaskCounts {
   waitingApproval: number;
 }
 
-/** In-memory task store. State is lost when the process exits. */
+/** Task store. Held in memory, and also kept in `persistence` when one is given (otherwise lost when the process exits). */
 export class TaskStore {
   private readonly records = new Map<string, TaskRecord>();
   private readonly listeners = new Map<string, Set<TaskEventListener>>();
   private readonly everyEvent = new Set<TaskEventListener>();
 
+  constructor(private readonly persistence?: TaskPersistence) {
+    for (const record of persistence?.load() ?? []) this.records.set(record.report.task.id, record);
+  }
+
+  /** Every task in the store, oldest first. */
+  all(): TaskRecord[] {
+    return [...this.records.values()];
+  }
+
+  /** Stores the task's current state. A failing disk is logged, never allowed to break a task. */
+  persist(record: TaskRecord): void {
+    try {
+      this.persistence?.save(record);
+    } catch (error) {
+      console.error(`Could not save task ${record.report.task.id}:`, error);
+    }
+  }
+
   add(record: TaskRecord): void {
     const id = record.report.task.id;
     if (this.records.has(id)) throw new Error(`Task already exists: ${id}`);
     this.records.set(id, record);
+    this.persist(record);
   }
 
   get(id: string): TaskRecord | undefined {
@@ -88,6 +108,8 @@ export class TaskStore {
       data
     };
     record.events.push(event);
+    // Saved after every event, so the file is never more than one event behind.
+    this.persist(record);
 
     // The store-wide listeners run first, so the audit entry exists before anything reacts to the event.
     const listeners = [...this.everyEvent, ...(this.listeners.get(event.taskId) ?? [])];

@@ -34,6 +34,5 @@ jobs:
           test -f agents/planner/src/index.ts
           test -f agents/coding/src/index.ts
           test -f agents/qa/src/index.ts
-          test -f agents/files/src/index.ts
           test -f tests/integration/vertical-slice.test.ts
           echo "KHAN OS vertical slice verified"

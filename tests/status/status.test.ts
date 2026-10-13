@@ -54,7 +54,7 @@ test("a healthy system reports four components up; the model router and an in-me
   assert.equal(status.version, "1.2.3");
   assert.equal(status.uptimeSeconds, 5);
   assert.equal(status.checkedAt, new Date(5000).toISOString());
-  assert.match(component(status, "model-router").detail, /isn't used by the orchestrator/);
+  assert.match(component(status, "model-router").detail, /No model is configured.*NVIDIA_API_KEY/);
 });
 
 test("the orchestrator probe reports live task counts", async () => {
