@@ -15,15 +15,6 @@ import type {
   TaskResponse,
   UpdateSettingsRequest,
   UpdateSettingsResponse
-Actor,
-ApiError,
-AuditResponse,
-CreateTaskRequest,
-HealthResponse,
-StatusResponse,
-TaskEvent,
-TaskEventsResponse,
-TaskResponse
 } from "../../../packages/contracts/src/api";
 import type { TaskStatus } from "../../../packages/contracts/src/task";
 import { PLAN_AGENTS } from "../../../agents/planner/src/index";
@@ -105,20 +96,6 @@ export interface KhanApiServerOptions {
   modelHolder?: ModelHolder;
   /** Absolute path to the root .env file. Required for /v1/settings POST to persist key changes. */
   envPath?: string;
-/** Browser origins allowed to call the API. Defaults to API_CORS_ORIGINS or the Vite dev server. */
-corsOrigins?: string[];
-/** Interval between keep-alive comments on event streams. */
-heartbeatMs?: number;
-/** How long a browser waits before reconnecting a dropped event stream. */
-retryMs?: number;
-/**
-* Clock in ms, used for uptime and the rate limiter. Injectable so tests need no real waiting.
-*/
-clock?: () => number;
-/** Requests per minute per client. Defaults to the KHAN_RATE_LIMIT_* environment variables; 0 turns a limit off. */
-rateLimits?: RateLimitConfig;
-/** API keys. Defaults to KHAN_API_KEYS; with none configured every request is accepted as "anonymous". */
-auth?: ApiKeyAuth;
 /**
 * The ghost registry, which persists to <dir>/ghosts.jsonl. Defaults to the KHAN_GHOST_DIR directory, else
 * "data". Inject one to keep a server's ghosts out of that shared file: two registries on one directory
@@ -127,11 +104,6 @@ auth?: ApiKeyAuth;
 ghosts?: GhostRegistry;
 /** The swarm arena. In memory only: a restart forgets finished swarms. Inject one to keep a test server's swarms its own. */
 swarms?: SwarmArena;
-/**
-* Who a request comes from, for rate limiting. Defaults to the socket's address. Override it only to trust a
-* reverse proxy's forwarded address (or in tests): anything else lets a caller pick its own bucket.
-*/
-clientAddress?: (req: IncomingMessage) => string;
 }
 
 const SERVICE_NAME = "khan-os-api";
@@ -195,10 +167,8 @@ afterSeq: number;
 }
 
 type RouteResult =
-  | [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | SettingsResponse | UpdateSettingsResponse]
+  | [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | SettingsResponse | UpdateSettingsResponse | VoiceResponse | GhostReport | { ghosts: Ghost[] } | SwarmReport | { swarms: Swarm[] }]
   | EventStreamRequest;
-| [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | VoiceResponse | GhostReport | { ghosts: Ghost[] } | SwarmReport | { swarms: Swarm[] }]
-| EventStreamRequest;
 
 const AUDIT_ORDERS = ["asc", "desc"] as const;
 
@@ -423,14 +393,10 @@ async function route(
   req: IncomingMessage,
   status: () => StatusResponse,
   actor: Actor,
+  ghosts: GhostRegistry,
+  swarms: SwarmArena,
   modelHolder?: ModelHolder,
   envPath?: string
-orchestrator: KhanOrchestrator,
-req: IncomingMessage,
-status: () => StatusResponse,
-actor: Actor,
-ghosts: GhostRegistry,
-swarms: SwarmArena
 ): Promise<RouteResult> {
 const method = req.method ?? "GET";
 const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
@@ -467,10 +433,6 @@ const { pathname, searchParams } = new URL(req.url ?? "/", "http://localhost");
     throw methodNotAllowed(["GET", "POST"]);
   }
 
-  if (pathname === "/v1/audit") {
-    if (method !== "GET") throw methodNotAllowed(["GET"]);
-    return [200, readAudit(orchestrator, searchParams)];
-  }
 if (pathname === "/v1/audit") {
 if (method !== "GET") throw methodNotAllowed(["GET"]);
 return [200, readAudit(orchestrator, searchParams)];
@@ -710,7 +672,9 @@ export function createKhanApiServer(
     clientAddress = clientIp,
     model,
     modelHolder,
-    envPath
+    envPath,
+    ghosts = new GhostRegistry(orchestrator, process.env.KHAN_GHOST_DIR ?? "data"),
+    swarms = new SwarmArena(orchestrator)
   }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
@@ -739,7 +703,7 @@ export function createKhanApiServer(
       const preflight = Object.keys(cors).length
         ? {
             ...cors,
-            "Access-Control-Allow-Methods": "GET, POST",
+            "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE",
             "Access-Control-Allow-Headers": "Content-Type, Authorization",
             "Access-Control-Max-Age": "600"
           }
@@ -748,52 +712,6 @@ export function createKhanApiServer(
       res.end();
       return;
     }
-orchestrator = new KhanOrchestrator(),
-{
-corsOrigins = corsOriginsFromEnv(),
-heartbeatMs = DEFAULT_HEARTBEAT_MS,
-retryMs = SSE_RETRY_MS,
-clock = Date.now,
-rateLimits = rateLimitsFromEnv(),
-auth = ApiKeyAuth.fromEnv(),
-clientAddress = clientIp,
-ghosts = new GhostRegistry(orchestrator, process.env.KHAN_GHOST_DIR ?? "data"),
-swarms = new SwarmArena(orchestrator)
-}: KhanApiServerOptions = {}
-) {
-const allowedOrigins = new Set(corsOrigins);
-const version = readVersion();
-const startedAt = clock();
-const limiter = new RateLimiter(rateLimits, clock);
-const status = () =>
-collectStatus({
-service: SERVICE_NAME,
-version,
-startedAt,
-now: clock,
-diagnostics: () => orchestrator.diagnostics(),
-planAgents: PLAN_AGENTS,
-verify: verifyIndependentQa,
-rateLimiter: limiter
-});
-
-return createServer((req: IncomingMessage, res: ServerResponse) => {
-const cors = corsHeaders(req.headers.origin, allowedOrigins);
-if (req.method === "OPTIONS") {
-// A preflight carries no credentials and takes no token.
-const preflight = Object.keys(cors).length
-? {
-...cors,
-"Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE",
-"Access-Control-Allow-Headers": "Content-Type, Authorization",
-"Access-Control-Max-Age": "600"
-}
-: {};
-res.writeHead(204, preflight);
-res.end();
-return;
-}
-
 let url: URL;
 try {
 url = new URL(req.url ?? "/", "http://localhost");
@@ -834,7 +752,7 @@ actor = principal.name;
     }
     if (decision) Object.assign(headers, rateHeaders(decision));
 
-    route(orchestrator, req, status, actor, modelHolder, envPath).then(
+    route(orchestrator, req, status, actor, ghosts, swarms, modelHolder, envPath).then(
       (result) => {
         if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
         else send(res, result[0], result[1], headers);
@@ -914,47 +832,4 @@ if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
     );
     console.log(`Audit log: ${auditFile} (${health.entries} entries, chain ${health.integrity.ok ? "intact" : `BROKEN at entry ${health.integrity.brokenAt}`})`);
   });
-// 3. The key's own limit, on top of the client's: one key shared across many addresses is still one caller.
-const byKey = limiter.check(rateClass, `key:${principal.name}`);
-if (byKey?.limited) return refuse(byKey);
-if (byKey && (!decision || byKey.remaining < decision.remaining)) decision = byKey;
-}
-if (decision) Object.assign(headers, rateHeaders(decision));
-
-route(orchestrator, req, status, actor, ghosts, swarms).then(
-(result) => {
-if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
-else send(res, result[0], result[1], headers);
-},
-(error: unknown) => {
-const { status, body, headers: errorHeaders } = toError(error);
-send(res, status, body, { ...headers, ...errorHeaders });
-}
-);
-});
-}
-
-if (process.argv[1]?.replaceAll("\\", "/").endsWith("apps/api/src/index.ts")) {
-// Run as a server, the audit log is kept in a file (git-ignored data/ folder unless KHAN_AUDIT_FILE says otherwise).
-const auditFile = process.env.KHAN_AUDIT_FILE ?? join(process.cwd(), "data", "audit.jsonl");
-const audit = new AuditLog(new FileAuditSink(auditFile));
-const orchestrator = new KhanOrchestrator(undefined, undefined, undefined, undefined, audit);
-let auth: ApiKeyAuth;
-try {
-auth = ApiKeyAuth.fromEnv();
-} catch (error) {
-// A half-configured auth must stop the server, not silently run without it.
-console.error(`Cannot start: ${error instanceof Error ? error.message : String(error)}`);
-process.exit(1);
-}
-createKhanApiServer(orchestrator, { auth }).listen(PORT, "127.0.0.1", () => {
-const health = audit.health();
-console.log(`KHAN OS API: http://127.0.0.1:${PORT}`);
-console.log(
-auth.enabled
-? `Auth: on (${auth.names().join(", ")}). Requests need "Authorization: Bearer <key>"; /health and /v1/status are open.`
-: "Auth: off (KHAN_API_KEYS is not set): every request is accepted as 'anonymous'."
-);
-console.log(`Audit log: ${auditFile} (${health.entries} entries, chain ${health.integrity.ok ? "intact" : `BROKEN at entry ${health.integrity.brokenAt}`})`);
-});
 }
