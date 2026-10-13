@@ -264,10 +264,17 @@ export class TaskSync {
     this.pausedUntil = Date.now() + retryAfterMs;
     this.options.onError(`The API is rate limiting requests. Retrying in ${Math.ceil(retryAfterMs / 1000)}s.`);
     clearTimeout(this.resumeTimer);
-    this.resumeTimer = setTimeout(() => {
+    const resume = () => {
+      if (this.stopped) return;
+      const remaining = this.pausedUntil - Date.now();
+      if (remaining > 0) {
+        this.resumeTimer = setTimeout(resume, remaining);
+        return;
+      }
       this.resumeTimer = undefined;
-      if (!this.stopped) void this.refresh();
-    }, retryAfterMs);
+      void this.refresh();
+    };
+    this.resumeTimer = setTimeout(resume, retryAfterMs);
   }
 
   private startPolling(): void {

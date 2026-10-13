@@ -469,6 +469,40 @@ test("when the API rate limits reads, the sync stays quiet for the wait, then ca
   }, gate.handler);
 });
 
+test("a retry timer firing before the rate-limit deadline is rescheduled instead of losing the retry", async (t) => {
+  const report = await new KhanOrchestrator().run(ANALYSIS_GOAL);
+  let now = 1000;
+  t.mock.method(Date, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let reads = 0;
+  const watch = new Watch();
+  const client: KhanApiClient = {
+    ...createApiClient("http://unused"),
+    getTask: async () => {
+      reads++;
+      if (reads === 1) throw new ApiRequestError(429, "rate_limited", "too many requests", 60);
+      return report;
+    },
+    getTaskEvents: async () => ({ taskId: report.task.id, events: [] })
+  };
+  const sync = new TaskSync({ client, taskId: report.task.id, createEventSource: () => { throw new Error("No stream"); }, ...watch.handlers() });
+  sync.start();
+  try {
+    await watch.until(() => watch.errors.some(message => message?.includes("rate limiting")));
+    await Promise.resolve();
+    now = 1059;
+    t.mock.timers.tick(60);
+    assert.equal(reads, 1, "no request before the deadline");
+    now = 1060;
+    t.mock.timers.tick(1);
+    await watch.until(() => watch.errors.at(-1) === null);
+    assert.equal(reads, 2, "the early timer must retain the retry");
+    assert.equal(watch.report?.task.status, "completed");
+  } finally {
+    sync.stop();
+  }
+});
+
 test("against an API that needs a key, a keyed sync streams the whole run over ?token=", { timeout: 15000 }, async () => {
   await withLive(
     async ({ base, orchestrator }) => {
