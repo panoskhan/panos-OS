@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: panos-os
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build && VITE_API_URL=/ npm run web:build
+    startCommand: node --import tsx apps/web/src/online-server.ts
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.0
+      - key: SITE_PASSWORD
+        sync: false
