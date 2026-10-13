@@ -1,11 +1,16 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, resolve, sep } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { createKhanApiServer } from "../../api/src/index";
-import { KhanOrchestrator } from "../../../services/orchestrator/src/orchestrator";
+import { KhanOrchestrator, defaultCodingHandler } from "../../../services/orchestrator/src/orchestrator";
 import { AuditLog, FileAuditSink } from "../../../services/audit/src/index";
 import { ApiKeyAuth } from "../../../services/auth/src/index";
+import { OwnerWorkspace } from "../../../services/owner/src/index";
+import { ownerRoute } from "../../../services/owner/src/http";
+import { TaskStore } from "../../../services/orchestrator/src/task-store";
+import { FileTaskPersistence } from "../../../services/orchestrator/src/task-persistence";
+import { createModelCodingHandler } from "../../../agents/coding/src/model-handler";
 
 const mime: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -18,8 +23,12 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
   if (password.length < 16) throw new Error("SITE_PASSWORD must contain at least 16 characters.");
   if (!existsSync(resolve(root, "index.html"))) throw new Error("Build the web app before starting the online server.");
   const expected = digest(`panos:${password}`);
-  const audit = new AuditLog(new FileAuditSink(process.env.KHAN_AUDIT_FILE ?? "data/audit.jsonl"));
-  const orchestrator = new KhanOrchestrator(undefined, undefined, undefined, undefined, audit);
+  const directory = process.env.KHAN_DATA_DIR ?? dirname(process.env.KHAN_AUDIT_FILE ?? "data/audit.jsonl");
+  const owner = new OwnerWorkspace(directory);
+  const tasks = new TaskStore(new FileTaskPersistence(join(directory, "tasks.json")));
+  const audit = new AuditLog(new FileAuditSink(process.env.KHAN_AUDIT_FILE ?? join(directory, "audit.jsonl")));
+  const realHandler = createModelCodingHandler(owner);
+  const orchestrator = new KhanOrchestrator(undefined, undefined, (step, context) => owner.overview().model.enabled ? realHandler(step, context) : defaultCodingHandler(step, context), tasks, audit);
   // Every API request passes the site's authentication gate first. No key is shipped in browser assets.
   const api = createKhanApiServer(orchestrator, { auth: ApiKeyAuth.disabled() });
   const sessions = new Map<string, { api: ReturnType<typeof createKhanApiServer>; expires: number }>();
@@ -39,6 +48,11 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
     const header = req.headers.authorization ?? "";
     const credential = header.startsWith("Basic ") ? Buffer.from(header.slice(6), "base64").toString("utf8") : "";
     const authenticated = timingSafeEqual(digest(credential), expected);
+    const ownerPath = pathname === "/owner" || pathname.startsWith("/owner-api/");
+    if (ownerPath && !authenticated) {
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Panos OS", charset="UTF-8"' }).end("Owner sign-in: username panos.");
+      return;
+    }
     const publicApi = (req.method === "GET" && (pathname === "/v1/status" || /^\/v1\/tasks\/[^/]+(?:\/events)?$/.test(pathname)))
       || (req.method === "POST" && pathname === "/v1/tasks");
     const apiPath = pathname === "/v1" || pathname.startsWith("/v1/");
@@ -58,6 +72,14 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
       try {
         if (new URL(req.headers.origin).host !== req.headers.host) { res.writeHead(403).end(); return; }
       } catch { res.writeHead(403).end(); return; }
+    }
+    if (pathname === "/owner" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(readFileSync(join(__dirname, "../owner.html")));
+      return;
+    }
+    if (pathname.startsWith("/owner-api/")) {
+      void ownerRoute(req, res, owner, tasks);
+      return;
     }
     let visitorApi = api;
     if (publicDemo && !authenticated && (pathname === "/" || publicApi)) {

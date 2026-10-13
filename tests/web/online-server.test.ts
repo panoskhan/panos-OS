@@ -54,6 +54,33 @@ test("online host protects the app and API, serves assets, and completes a task 
   }
 });
 
+test("private owner projects and task reports are restored when the online server restarts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "panos-owner-restart-"));
+  writeFileSync(join(dir, "index.html"), "<!doctype html><title>Panos OS</title>");
+  const previous = process.env.KHAN_AUDIT_FILE;
+  const headers = { Authorization: `Basic ${Buffer.from("panos:test-only-password-12345").toString("base64")}`, "Content-Type": "application/json" };
+  const start = async () => {
+    process.env.KHAN_AUDIT_FILE = join(dir, "audit.jsonl");
+    const server = createOnlineServer("test-only-password-12345", dir, true);
+    if (previous === undefined) delete process.env.KHAN_AUDIT_FILE;
+    else process.env.KHAN_AUDIT_FILE = previous;
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  };
+  const stop = async (server: ReturnType<typeof createOnlineServer>) => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); };
+  let running = await start();
+  try {
+    const project = await (await fetch(running.base + "/owner-api/projects", { method: "POST", headers, body: JSON.stringify({ name: "Retained project" }) })).json() as { id: string };
+    const created = await (await fetch(running.base + "/v1/tasks", { method: "POST", headers, body: JSON.stringify({ goal: "Analyze my private project" }) })).json() as { task: { id: string } };
+    await (await fetch(running.base + `/v1/tasks/${created.task.id}/events`, { headers: { ...headers, Accept: "text/event-stream" } })).text();
+    await stop(running.server); running = await start();
+    assert.equal((await fetch(running.base + "/owner-api/projects/" + project.id, { headers })).status, 200);
+    const restored = await (await fetch(running.base + "/v1/tasks/" + created.task.id, { headers })).json() as { task: { status: string } };
+    assert.equal(restored.task.status, "completed");
+    assert.equal((await fetch(running.base + "/v1/tasks/" + created.task.id)).status, 404);
+  } finally { await stop(running.server); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("public demo opens without credentials but blocks settings, automation and approvals", async () => {
   const dir = mkdtempSync(join(tmpdir(), "panos-demo-"));
   writeFileSync(join(dir, "index.html"), "<!doctype html><title>Public demo</title>");
@@ -92,6 +119,14 @@ test("public demo opens without credentials but blocks settings, automation and 
     assert.equal(report.verification.passed, true);
     const headers = { Authorization: `Basic ${Buffer.from("panos:test-only-password-12345").toString("base64")}` };
     assert.equal((await fetch(base + "/v1/settings", { headers })).status, 200);
+    assert.equal((await fetch(base + "/owner")).status, 401);
+    assert.equal((await fetch(base + "/owner-api/overview")).status, 401);
+    assert.equal((await fetch(base + "/owner", { headers })).status, 200);
+    const projectResponse = await fetch(base + "/owner-api/projects", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Owner-only project" }) });
+    assert.equal(projectResponse.status, 201);
+    const project = await projectResponse.json() as { id: string };
+    assert.equal((await fetch(base + "/owner-api/projects/" + project.id)).status, 401);
+    assert.equal((await fetch(base + "/owner-api/projects/" + project.id, { headers })).status, 200);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

@@ -60,6 +60,7 @@ function App() {
       <main className="main" style={page !== "home" ? { display: "none" } : undefined}>
         {import.meta.env.VITE_PUBLIC_DEMO === "true" && <p role="note">Public demo · Agents simulate work. Try an analysis task. Settings, approvals, and background automation are reserved for the site owner. Do not enter private information.</p>}
         <header className="topbar">
+          {import.meta.env.VITE_PUBLIC_DEMO === "true" && <a href="/owner">Owner sign-in</a>}
           <p className="tagline">Understand · Plan · Act · Verify</p>
           <div className="core-badge" data-state={degraded ? "degraded" : apiState} title={api.baseUrl}>
             <i aria-hidden="true" />

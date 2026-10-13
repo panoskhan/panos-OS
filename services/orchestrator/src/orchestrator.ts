@@ -75,7 +75,7 @@ async function stubDelay(): Promise<void> {
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 }
 
-const defaultCodingHandler: AgentHandler = async (step, context) => {
+export const defaultCodingHandler: AgentHandler = async (step, context) => {
   await stubDelay();
   return {
     status: "success",

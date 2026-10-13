@@ -19,4 +19,14 @@ Confirm `/health` returns `{"status":"ok","service":"panos-os-online"}`. Opening
 
 ## Local deployment check
 
+## Owner workspace
+
+Open `/owner` and sign in as `panos` with the password in Render's SITE_PASSWORD variable. The dashboard lets you create projects, upload text files, inspect files and saved suggested diffs, run private tasks, review approvals, configure a NVIDIA model key, disable AI, set a daily call limit, and export project backups. Public demo sessions cannot access these endpoints, owner tasks, API keys, or uploaded files. Uploads are data, never executed; suggestions are proposals and never automatically applied.
+
+Private AI starts disabled. Enter your own NVIDIA API key securely in the owner dashboard, choose a model, set the daily limit, and enable it. Keys are retained server-side in a mode-0600 owner data file and excluded from API responses and project backups. This private AI client uses NVIDIA's OpenAI-compatible endpoint. One logical call runs at a time, outputs are capped at 2048 tokens, and failed calls consume the limit. Existing provider retry behavior can cause multiple provider requests per logical call. Costs are owner-entered estimates only; actual costs and token usage must be checked with the provider. Without a configured key, no live-model behavior has been verified.
+
+Owner projects, suggestions, settings, usage counters, audit entries, and task state are stored under KHAN_DATA_DIR (default data/). Public sessions remain temporary. File persistence survives process restarts on the same filesystem; durability across Render redeploys requires a persistent disk. Export project backups before moving to a disk: changing the data directory does not automatically migrate files or keys.
+
+`render.persistent.yaml` is the prepared paid alternative: a Starter service with a 1 GB disk mounted at /var/data, and KHAN_DATA_DIR=/var/data. It has not been enabled automatically. Review Render's current service and disk charges before switching a Blueprint path or adding the disk to the existing service. The Free blueprint stays unchanged. Do not create a second service just to add storage. The backup downloads projects and usage, not API keys or private tasks; retain keys separately in your password manager.
+
 Use Node 22.22.0, then run `npm ci`, `npm run build`, and `VITE_API_URL=/ npm run web:build`. Set `SITE_PASSWORD` in the process environment and run `node --import tsx apps/web/src/online-server.ts`. This is a deployment check; the actual public URL is assigned by the host after deployment.
