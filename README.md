@@ -1,5 +1,7 @@
 # KHAN OS
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23405136.svg)](https://doi.org/10.5281/zenodo.23405136)
+
 KHAN OS is a modular personal AI orchestration platform. You give it a goal; it plans a task graph, runs the steps
 through permission-gated agents, stops for your approval before anything protected, has an independent QA step verify
 the result, and records every decision in a tamper-evident audit log.
