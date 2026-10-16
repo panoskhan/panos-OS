@@ -9,6 +9,7 @@ import type {
   TaskResponse
 } from "../../../../packages/contracts/src/api";
 import type { Ghost, GhostReport, GhostSchedule } from "../../../../packages/contracts/src/ghost";
+import type { Swarm, SwarmReport } from "../../../../packages/contracts/src/swarm";
 
 export const DEFAULT_API_URL = "http://127.0.0.1:3001";
 export const UNAUTHORIZED_HINT = "the API needs a valid key: set VITE_API_KEY and reload";
@@ -59,6 +60,10 @@ export interface KhanApiClient {
   pauseGhost(ghostId: string): Promise<GhostReport>;
   resumeGhost(ghostId: string): Promise<GhostReport>;
   removeGhost(ghostId: string): Promise<GhostReport>;
+  /** All swarms (GET /v1/swarm). */
+  getSwarms(): Promise<{ swarms: Swarm[] }>;
+  launchSwarm(problem: string, size?: number): Promise<SwarmReport>;
+  getSwarm(swarmId: string): Promise<SwarmReport>;
 }
 
 /**
@@ -93,6 +98,7 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL, apiKey?: stri
 
   const taskPath = (taskId: string) => `/v1/tasks/${encodeURIComponent(taskId)}`;
   const ghostPath = (ghostId: string) => `/v1/ghost/${encodeURIComponent(ghostId)}`;
+  const swarmPath = (swarmId: string) => `/v1/swarm/${encodeURIComponent(swarmId)}`;
   const decision = (reason?: string) => (reason ? { reason } : undefined);
 
   return {
@@ -116,7 +122,10 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL, apiKey?: stri
     registerGhost: (goal, schedule) => request<GhostReport>("POST", "/v1/ghost", { goal, schedule }),
     pauseGhost: (ghostId) => request<GhostReport>("PATCH", ghostPath(ghostId), { action: "pause" }),
     resumeGhost: (ghostId) => request<GhostReport>("PATCH", ghostPath(ghostId), { action: "resume" }),
-    removeGhost: (ghostId) => request<GhostReport>("DELETE", ghostPath(ghostId))
+    removeGhost: (ghostId) => request<GhostReport>("DELETE", ghostPath(ghostId)),
+    getSwarms: () => request<{ swarms: Swarm[] }>("GET", "/v1/swarm"),
+    launchSwarm: (problem, size) => request<SwarmReport>("POST", "/v1/swarm", size !== undefined ? { problem, size } : { problem }),
+    getSwarm: (swarmId) => request<SwarmReport>("GET", swarmPath(swarmId))
   };
 }
 

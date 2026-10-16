@@ -10,8 +10,10 @@ import { QaResult } from "./components/QaResult";
 import { RightRail } from "./components/RightRail";
 import { Sidebar } from "./components/Sidebar";
 import { SettingsPage } from "./components/SettingsPage";
+import { SwarmPanel } from "./components/SwarmPanel";
 import { SystemReport } from "./components/SystemReport";
 import { useGhosts } from "./hooks/useGhosts";
+import { useSwarms } from "./hooks/useSwarms";
 import { useSystemStatus } from "./hooks/useSystemStatus";
 import { isTerminal, useTask } from "./hooks/useTask";
 import { useTaskHistory } from "./hooks/useTaskHistory";
@@ -36,6 +38,7 @@ function App() {
   const degraded = status.report?.status === "degraded";
   const tasks = useTaskHistory(report);
   const ghosts = useGhosts();
+  const swarms = useSwarms();
 
   const avatar = avatarState(report, pending);
   const active = useMemo(() => activeAgents(report, pending), [report, pending]);
@@ -100,6 +103,7 @@ function App() {
         </div>
 
         {import.meta.env.VITE_PUBLIC_DEMO !== "true" && <GhostPanel ghosts={ghosts} />}
+        {import.meta.env.VITE_PUBLIC_DEMO !== "true" && <SwarmPanel swarms={swarms} />}
 
         <SystemReport report={report} />
 

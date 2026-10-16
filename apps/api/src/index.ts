@@ -41,7 +41,7 @@ import { WorkspaceManager } from "../../../services/workspace/src/index";
 import { TaskStore } from "../../../services/orchestrator/src/task-store";
 import { FileTaskPersistence } from "../../../services/orchestrator/src/task-persistence";
 import { parseVoiceIntent, type VoiceResponse } from "./voice";
-import { GhostRegistry, MIN_INTERVAL_MS, type Ghost, type GhostReport } from "../../../packages/core/src/ghost";
+import { GhostRegistry, MIN_INTERVAL_MS, nextCronFire, parseCron, type Ghost, type GhostReport } from "../../../packages/core/src/ghost";
 import { SwarmArena, SWARM_DEFAULT_SIZE, SWARM_MAX_SIZE, SWARM_MIN_SIZE, type Swarm, type SwarmReport } from "../../../packages/core/src/swarm";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
@@ -531,15 +531,37 @@ throw new HttpError(422, "unrecognized_utterance", `Could not understand: "${utt
     if (schedule === undefined || schedule === null) {
       throw new HttpError(400, "schedule_required", "schedule is required");
     }
-    if (typeof schedule !== "object" || (schedule as Record<string, unknown>).type !== "interval") {
-      throw new HttpError(400, "invalid_schedule", 'schedule.type must be "interval"');
+    if (typeof schedule !== "object" || schedule === null) {
+      throw new HttpError(400, "invalid_schedule", 'schedule must be an object with type "interval" or "cron"');
     }
-    // Checked here as well as in the registry, so the caller gets a 400 rather than a 500.
-    const ms = Number((schedule as Record<string, unknown>).ms);
-    if (!Number.isFinite(ms) || ms < MIN_INTERVAL_MS) {
-      throw new HttpError(400, "interval_too_short", `schedule.ms must be at least ${MIN_INTERVAL_MS}`);
+    const scheduleType = (schedule as Record<string, unknown>).type;
+    if (scheduleType === "interval") {
+      // Checked here as well as in the registry, so the caller gets a 400 rather than a 500.
+      const ms = Number((schedule as Record<string, unknown>).ms);
+      if (!Number.isFinite(ms) || ms < MIN_INTERVAL_MS) {
+        throw new HttpError(400, "interval_too_short", `schedule.ms must be at least ${MIN_INTERVAL_MS}`);
+      }
+      return [201, ghosts.register(goal.trim(), { type: "interval", ms }, actor)];
     }
-    return [201, ghosts.register(goal.trim(), { type: "interval", ms }, actor)];
+    if (scheduleType === "cron") {
+      const expression = (schedule as Record<string, unknown>).expression;
+      if (typeof expression !== "string" || !expression.trim()) {
+        throw new HttpError(400, "cron_expression_required", "schedule.expression must be a non-empty cron string");
+      }
+      try {
+        parseCron(expression.trim());
+      } catch (err) {
+        throw new HttpError(400, "cron_invalid", (err as Error).message);
+      }
+      const tz = (schedule as Record<string, unknown>).tz;
+      const tzStr = typeof tz === "string" ? tz.trim() || undefined : undefined;
+      const next = nextCronFire(expression.trim(), new Date(), tzStr);
+      if (!next) {
+        throw new HttpError(400, "cron_no_future_fire", "expression never fires within 4 years");
+      }
+      return [201, ghosts.register(goal.trim(), { type: "cron", expression: expression.trim(), ...(tzStr ? { tz: tzStr } : {}) }, actor)];
+    }
+    throw new HttpError(400, "invalid_schedule", 'schedule.type must be "interval" or "cron"');
   }
 
   const ghostMatch = GHOST_ID_PATH.exec(pathname);
