@@ -42,6 +42,7 @@ import { TaskStore } from "../../../services/orchestrator/src/task-store";
 import { FileTaskPersistence } from "../../../services/orchestrator/src/task-persistence";
 import { parseVoiceIntent, type VoiceResponse } from "./voice";
 import { GhostRegistry, MIN_INTERVAL_MS, nextCronFire, parseCron, type Ghost, type GhostReport } from "../../../packages/core/src/ghost";
+import { MindCloneRegistry, MINDCLONE_MAX_NAME_LENGTH, MINDCLONE_MAX_SOURCE_BYTES, MINDCLONE_MAX_SOURCES, type MindClone, type MindCloneReport } from "../../../packages/core/src/mindclone";
 import { SwarmArena, SWARM_DEFAULT_SIZE, SWARM_MAX_SIZE, SWARM_MIN_SIZE, type Swarm, type SwarmReport } from "../../../packages/core/src/swarm";
 
 const PORT = Number(process.env.API_PORT ?? 3001);
@@ -65,6 +66,8 @@ const GHOST_PATH = /^\/v1\/ghost$/;
 const GHOST_ID_PATH = /^\/v1\/ghost\/([^/]+)$/;
 const SWARM_PATH = /^\/v1\/swarm$/;
 const SWARM_ID_PATH = /^\/v1\/swarm\/([^/]+)$/;
+const MINDCLONE_PATH = /^\/v1\/mindclone$/;
+const MINDCLONE_ID_PATH = /^\/v1\/mindclone\/([^/]+)$/;
 const DEFAULT_CORS_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const SSE_RETRY_MS = 2_000;
@@ -104,6 +107,11 @@ export interface KhanApiServerOptions {
 ghosts?: GhostRegistry;
 /** The swarm arena. In memory only: a restart forgets finished swarms. Inject one to keep a test server's swarms its own. */
 swarms?: SwarmArena;
+/**
+ * The Mind Clone registry, which persists to <dir>/mindclones.jsonl.
+ * Defaults to KHAN_GHOST_DIR (same dir as ghosts) or "data".
+ */
+mindclones?: MindCloneRegistry;
 }
 
 const SERVICE_NAME = "khan-os-api";
@@ -167,7 +175,7 @@ afterSeq: number;
 }
 
 type RouteResult =
-  | [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | SettingsResponse | UpdateSettingsResponse | VoiceResponse | GhostReport | { ghosts: Ghost[] } | SwarmReport | { swarms: Swarm[] }]
+  | [status: number, payload: HealthResponse | StatusResponse | AuditResponse | TaskResponse | TaskEventsResponse | SettingsResponse | UpdateSettingsResponse | VoiceResponse | GhostReport | { ghosts: Ghost[] } | SwarmReport | { swarms: Swarm[] } | MindCloneReport | { clones: MindClone[] }]
   | EventStreamRequest;
 
 const AUDIT_ORDERS = ["asc", "desc"] as const;
@@ -395,6 +403,7 @@ async function route(
   actor: Actor,
   ghosts: GhostRegistry,
   swarms: SwarmArena,
+  mindclones: MindCloneRegistry,
   modelHolder?: ModelHolder,
   envPath?: string
 ): Promise<RouteResult> {
@@ -632,6 +641,68 @@ throw new HttpError(422, "unrecognized_utterance", `Could not understand: "${utt
   }
   // ── End Phase 7c ───────────────────────────────────────────────────────────
 
+  // ── Phase 7d — Mind Clone ─────────────────────────────────────────────────
+  if (MINDCLONE_PATH.test(pathname)) {
+    if (method === "GET") return [200, { clones: mindclones.list(actor) }];
+    if (method !== "POST") throw methodNotAllowed(["GET", "POST"]);
+    const body = asObject(await readJsonBody(req));
+
+    const name = body.name;
+    if (typeof name !== "string" || !name.trim()) {
+      throw new HttpError(400, "name_required", "name must be a non-empty string");
+    }
+    if (name.length > MINDCLONE_MAX_NAME_LENGTH) {
+      throw new HttpError(400, "name_too_long", `name must be at most ${MINDCLONE_MAX_NAME_LENGTH} chars`);
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(name.trim())) {
+      throw new HttpError(400, "name_invalid", "name may only contain alphanumeric characters, dashes and underscores");
+    }
+
+    const rawSources = body.sources;
+    if (!Array.isArray(rawSources) || rawSources.length === 0) {
+      throw new HttpError(400, "sources_required", "sources must be a non-empty array");
+    }
+    if (rawSources.length > MINDCLONE_MAX_SOURCES) {
+      throw new HttpError(400, "sources_limit", `max ${MINDCLONE_MAX_SOURCES} sources per training run`);
+    }
+    const sources: { label: string; content: string }[] = [];
+    for (let i = 0; i < rawSources.length; i++) {
+      const s = rawSources[i] as Record<string, unknown>;
+      if (typeof s?.label !== "string" || typeof s?.content !== "string") {
+        throw new HttpError(400, "source_invalid", `sources[${i}] must have string fields "label" and "content"`);
+      }
+      if (Buffer.byteLength(s.content, "utf-8") > MINDCLONE_MAX_SOURCE_BYTES) {
+        throw new HttpError(400, "source_too_large", `sources[${i}] exceeds ${MINDCLONE_MAX_SOURCE_BYTES} bytes`);
+      }
+      sources.push({ label: s.label, content: s.content });
+    }
+    try {
+      return [201, mindclones.train(name.trim(), sources, actor)];
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("clone_name_taken")) throw new HttpError(409, "clone_name_taken", error.message);
+      throw error;
+    }
+  }
+
+  const mindcloneMatch = MINDCLONE_ID_PATH.exec(pathname);
+  if (mindcloneMatch) {
+    let cloneId: string;
+    try {
+      cloneId = decodeURIComponent(mindcloneMatch[1]);
+    } catch {
+      throw new HttpError(400, "invalid_clone_id");
+    }
+    try {
+      if (method === "GET") return [200, mindclones.get(cloneId)];
+      if (method === "DELETE") return [200, mindclones.archive(cloneId)];
+      throw methodNotAllowed(["GET", "DELETE"]);
+    } catch (error) {
+      if (error instanceof Error && error.message === "clone_not_found") throw new HttpError(404, "clone_not_found");
+      throw error;
+    }
+  }
+  // ── End Phase 7d ───────────────────────────────────────────────────────────
+
 const match = TASK_ROUTE.exec(pathname);
 if (!match) throw new HttpError(404, "not_found");
 const taskId = decodeTaskId(match[1]);
@@ -696,7 +767,8 @@ export function createKhanApiServer(
     modelHolder,
     envPath,
     ghosts = new GhostRegistry(orchestrator, process.env.KHAN_GHOST_DIR ?? "data"),
-    swarms = new SwarmArena(orchestrator)
+    swarms = new SwarmArena(orchestrator),
+    mindclones = new MindCloneRegistry(process.env.KHAN_GHOST_DIR ?? "data")
   }: KhanApiServerOptions = {}
 ) {
   const allowedOrigins = new Set(corsOrigins);
@@ -774,7 +846,7 @@ actor = principal.name;
     }
     if (decision) Object.assign(headers, rateHeaders(decision));
 
-    route(orchestrator, req, status, actor, ghosts, swarms, modelHolder, envPath).then(
+    route(orchestrator, req, status, actor, ghosts, swarms, mindclones, modelHolder, envPath).then(
       (result) => {
         if ("kind" in result) streamTaskEvents(orchestrator, res, result, headers, heartbeatMs, retryMs);
         else send(res, result[0], result[1], headers);

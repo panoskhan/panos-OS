@@ -9,6 +9,7 @@ import type {
   TaskResponse
 } from "../../../../packages/contracts/src/api";
 import type { Ghost, GhostReport, GhostSchedule } from "../../../../packages/contracts/src/ghost";
+import type { MindClone, MindCloneReport } from "../../../../packages/contracts/src/mindclone";
 import type { Swarm, SwarmReport } from "../../../../packages/contracts/src/swarm";
 
 export const DEFAULT_API_URL = "http://127.0.0.1:3001";
@@ -64,6 +65,11 @@ export interface KhanApiClient {
   getSwarms(): Promise<{ swarms: Swarm[] }>;
   launchSwarm(problem: string, size?: number): Promise<SwarmReport>;
   getSwarm(swarmId: string): Promise<SwarmReport>;
+  /** All Mind Clones for the current actor (GET /v1/mindclone). */
+  getMindClones(): Promise<{ clones: MindClone[] }>;
+  trainMindClone(name: string, sources: { label: string; content: string }[]): Promise<MindCloneReport>;
+  getMindClone(cloneId: string): Promise<MindCloneReport>;
+  archiveMindClone(cloneId: string): Promise<MindCloneReport>;
 }
 
 /**
@@ -99,6 +105,7 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL, apiKey?: stri
   const taskPath = (taskId: string) => `/v1/tasks/${encodeURIComponent(taskId)}`;
   const ghostPath = (ghostId: string) => `/v1/ghost/${encodeURIComponent(ghostId)}`;
   const swarmPath = (swarmId: string) => `/v1/swarm/${encodeURIComponent(swarmId)}`;
+  const clonePath = (cloneId: string) => `/v1/mindclone/${encodeURIComponent(cloneId)}`;
   const decision = (reason?: string) => (reason ? { reason } : undefined);
 
   return {
@@ -125,7 +132,11 @@ export function createApiClient(baseUrl: string = DEFAULT_API_URL, apiKey?: stri
     removeGhost: (ghostId) => request<GhostReport>("DELETE", ghostPath(ghostId)),
     getSwarms: () => request<{ swarms: Swarm[] }>("GET", "/v1/swarm"),
     launchSwarm: (problem, size) => request<SwarmReport>("POST", "/v1/swarm", size !== undefined ? { problem, size } : { problem }),
-    getSwarm: (swarmId) => request<SwarmReport>("GET", swarmPath(swarmId))
+    getSwarm: (swarmId) => request<SwarmReport>("GET", swarmPath(swarmId)),
+    getMindClones: () => request<{ clones: MindClone[] }>("GET", "/v1/mindclone"),
+    trainMindClone: (name, sources) => request<MindCloneReport>("POST", "/v1/mindclone", { name, sources }),
+    getMindClone: (cloneId) => request<MindCloneReport>("GET", clonePath(cloneId)),
+    archiveMindClone: (cloneId) => request<MindCloneReport>("DELETE", clonePath(cloneId))
   };
 }
 

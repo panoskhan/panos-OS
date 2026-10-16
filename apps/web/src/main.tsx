@@ -5,6 +5,7 @@ import { EventTimeline } from "./components/EventTimeline";
 import { ExecutionGraph } from "./components/ExecutionGraph";
 import { GhostPanel } from "./components/GhostPanel";
 import { GoalInput } from "./components/GoalInput";
+import { MindClonePanel } from "./components/MindClonePanel";
 import { OrbitalCanvas } from "./components/OrbitalCanvas";
 import { QaResult } from "./components/QaResult";
 import { RightRail } from "./components/RightRail";
@@ -13,6 +14,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { SwarmPanel } from "./components/SwarmPanel";
 import { SystemReport } from "./components/SystemReport";
 import { useGhosts } from "./hooks/useGhosts";
+import { useMindClones } from "./hooks/useMindClones";
 import { useSwarms } from "./hooks/useSwarms";
 import { useSystemStatus } from "./hooks/useSystemStatus";
 import { isTerminal, useTask } from "./hooks/useTask";
@@ -39,6 +41,7 @@ function App() {
   const tasks = useTaskHistory(report);
   const ghosts = useGhosts();
   const swarms = useSwarms();
+  const mindclones = useMindClones();
 
   const avatar = avatarState(report, pending);
   const active = useMemo(() => activeAgents(report, pending), [report, pending]);
@@ -104,6 +107,7 @@ function App() {
 
         {import.meta.env.VITE_PUBLIC_DEMO !== "true" && <GhostPanel ghosts={ghosts} />}
         {import.meta.env.VITE_PUBLIC_DEMO !== "true" && <SwarmPanel swarms={swarms} />}
+        {import.meta.env.VITE_PUBLIC_DEMO !== "true" && <MindClonePanel clones={mindclones} />}
 
         <SystemReport report={report} />
 
