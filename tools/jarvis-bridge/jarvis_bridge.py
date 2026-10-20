@@ -13,7 +13,7 @@ Modes
 Configuration
 -------------
   Set env vars (or create a .env file in the same directory):
-    KHAN_API_URL  — e.g. http://localhost:3000   (no trailing slash)
+    KHAN_API_URL  — e.g. http://localhost:3001   (no trailing slash)
     KHAN_API_KEY  — Bearer key from KHAN_API_KEYS
 
 State
@@ -53,7 +53,7 @@ _load_dotenv(Path(__file__).with_name(".env"))
 
 # ─── Config ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-KHAN_API_URL: str = os.environ.get("KHAN_API_URL", "http://localhost:3000").rstrip("/")
+KHAN_API_URL: str = os.environ.get("KHAN_API_URL", "http://localhost:3001").rstrip("/")
 KHAN_API_KEY: str | None = os.environ.get("KHAN_API_KEY")
 
 # ─── State ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
