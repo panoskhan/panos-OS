@@ -8,7 +8,8 @@ the result, and records every decision in a tamper-evident audit log.
 
 **Understand → Plan → Act → Verify**, with a human decision in front of any consequential action.
 
-> Status: the first vertical slice works end to end (API, live web UI, approval loop, audit log, auth, rate limiting).
+> Status (v1.0): the core loop works end to end (API, live web UI, approval loop, audit log, auth, rate limiting), plus
+> voice control from JARVIS, Ghost Mode background goals, Swarm Wars, and a hosted owner workspace ([docs/ONLINE.md](docs/ONLINE.md)).
 > The agents are **stubs** unless `NVIDIA_API_KEY` is set; with it, the coding agent is backed by a real model that
 > proposes but does not change files. QA is still rule-based, and nothing touches GitHub or your files yet.
 > See [Known limitations](#known-limitations).
@@ -69,6 +70,12 @@ The server listens on `127.0.0.1` only (`API_PORT`, default 3001). All bodies ar
 | `GET /v1/tasks/:id/events` | The task's event log as JSON `{ taskId, events }`, **or a live Server-Sent Events stream** when the request has `Accept: text/event-stream`. | 200 |
 | `GET /v1/audit` | The audit log, with filters and paging (below). | 200 |
 | `GET /v1/status` | Self-test results for every component (below). Always open. | 200 |
+| `POST /v1/voice` | A spoken command from JARVIS, `{ "utterance", "taskId"? }` ([Voice](#voice-jarvis) below). | 201 / 202 / 200 |
+| `GET`, `POST /v1/ghost` | List ghosts, or register one: `{ "goal", "schedule": { "type": "interval", "ms" } }` (`ms` at least 5000). | 200 / 201 |
+| `GET`, `PATCH`, `DELETE /v1/ghost/:id` | Read a ghost, `{ "action": "pause" \| "resume" }` it, or remove it. | 200 |
+| `GET`, `POST /v1/swarm` | List swarms, or launch one: `{ "problem", "size"? }` (2 to 8 contenders, default 4), judged by one rubric. | 200 / 202 |
+| `GET /v1/swarm/:id` | One swarm, its contenders and the verdict. | 200 |
+| `GET`, `POST /v1/settings` | Whether the model is configured (the key is shown masked), or set `{ "nvidiaApiKey" }`. | 200 |
 
 Errors are `{ "error": "<code>", "detail"?: "…" }`: `400` bad input, `401` `unauthorized`, `404` unknown task or path,
 `405` wrong method, `409` `invalid_task_state` (for example approving a task that is not waiting), `413` body over 1 MB,
@@ -80,6 +87,31 @@ A task moves through `received → understanding → planning → executing → 
 **Event stream.** Each event has a sequence number `id`; a reconnecting `EventSource` resumes from `Last-Event-ID`. The
 stream replays history, then follows live, and ends with `event: end` after the task's last event (`task.completed`,
 `task.failed`, or the cancel), so the browser stops reconnecting. It stays open while a task waits for approval.
+
+## Voice (JARVIS)
+
+`POST /v1/voice` turns one spoken sentence into an action and answers with a short `message` for JARVIS to read aloud.
+
+| Say | Intent | Needs `taskId` |
+|---|---|---|
+| "Hey KHAN, build the dashboard", "create a task to …", "new task: …", "run …" | `new_task` (goal = the rest, verb kept) | no |
+| "approve", "yes", "go ahead", "looks good" | `approve` | yes |
+| "reject", "no", "bad idea" | `reject` | yes |
+| "cancel", "abort", "stop the task" | `cancel` | yes |
+| "status", "how's it going", "update me" | `status` | yes |
+
+Anything else gets `422 unrecognized_utterance`. Voice goes through the same auth, rate limits, permission gates and
+audit log as every other request: saying "approve" is recorded like pressing the button.
+
+The relay that runs next to JARVIS is `tools/jarvis-bridge/jarvis_bridge.py` (Python standard library only). It
+remembers the current task, so you can just say "approve":
+
+```bash
+cd tools/jarvis-bridge
+cp .env.example .env              # set KHAN_API_URL (default http://localhost:3001) and KHAN_API_KEY
+python jarvis_bridge.py "Hey KHAN, run the tests"
+python jarvis_bridge.py --listen  # one utterance per line on stdin
+```
 
 ## Auth
 
@@ -184,9 +216,14 @@ uses it yet, which never counts as degraded).
 - `agents/`: planner, coding and QA agents. With a key, the coding agent is backed by the model
   (`agents/coding/src/model-handler.ts`).
 - `packages/contracts`: the shared types, used by both the API and the web app.
+- `apps/api/src/voice.ts`: the voice intent parser behind `/v1/voice`.
+- `packages/core`: Ghost Mode (`ghost.ts`, persisted to `KHAN_GHOST_DIR/ghosts.jsonl`, default `data/`) and Swarm Wars
+  (`swarm.ts`, in memory).
+- `tools/jarvis-bridge`: the JARVIS relay ([Voice](#voice-jarvis)).
+- `apps/web/src/online-server.ts`: the hosted server with the public demo and owner workspace ([docs/ONLINE.md](docs/ONLINE.md)).
 - `tests/`: unit, integration and real-HTTP tests (real servers, real `EventSource`).
 
-Planned but not built: `apps/extension` (browser bridge), `services/memory`, `services/verification`, `tools/`. The
+Planned but not built: `apps/extension` (browser bridge), `services/memory`, `services/verification`. The
 long-term data direction (PostgreSQL, pgvector, Redis) is in `docs/ARCHITECTURE.md`.
 
 ## Known limitations
@@ -214,7 +251,7 @@ long-term data direction (PostgreSQL, pgvector, Redis) is in `docs/ARCHITECTURE.
 - **Rate limits are per process and in memory,** and counted per client address. The 60/minute default for reads is
   tight for a busy browser tab (each live event triggers a re-read); raise `KHAN_RATE_LIMIT_READ` if you see 429s.
 - A step that is already running cannot be interrupted by cancel; it finishes and is recorded.
-- The "Projects / Agents / Model Router / Permissions / Settings" screens are not built.
+- The "Projects / Agents / Model Router / Permissions" screens are not built (Settings is).
 
 ## Development principle
 
