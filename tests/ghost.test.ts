@@ -250,10 +250,19 @@ describe("/v1/ghost", () => {
   it("POST with an unsupported schedule type returns 400 invalid_schedule", async () => {
     const { status, body } = await request(server, "POST", "/v1/ghost", {
       goal: "some goal",
-      schedule: { type: "cron", expression: "* * * * *" }
+      schedule: { type: "ticker", ms: 60_000 }
     });
     assert.equal(status, 400);
     assert.equal(body.error, "invalid_schedule");
+  });
+
+  it("POST with a malformed cron expression returns 400 cron_invalid", async () => {
+    const { status, body } = await request(server, "POST", "/v1/ghost", {
+      goal: "some goal",
+      schedule: { type: "cron", expression: "not a cron" }
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error, "cron_invalid");
   });
 
   it("POST below the minimum interval returns 400 interval_too_short", async () => {

@@ -44,7 +44,7 @@ test("the web client drives a ghost through its whole life against the real API"
     assert.equal(ghost.status, "active");
     assert.equal(ghost.goal, "sweep the audit log for refusals");
     assert.equal(ghost.fireCount, 0);
-    assert.equal(ghost.schedule.ms, 60_000);
+    assert.ok(ghost.schedule.type === "interval" && ghost.schedule.ms === 60_000);
 
     const listed = (await client.getGhosts()).ghosts;
     assert.equal(listed.length, 1);

@@ -173,6 +173,7 @@ export class GhostRegistry {
    * After it fires we re-arm immediately, so the ghost always has one pending timer.
    */
   private _scheduleCronFire(ghost: Ghost): void {
+    if (ghost.schedule.type !== "cron") return;
     const next = nextCronFire(ghost.schedule.expression, new Date(), ghost.schedule.tz);
     if (!next) {
       // Expression never fires again (e.g. a past date-specific cron). Retire silently.
