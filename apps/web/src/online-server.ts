@@ -11,6 +11,7 @@ import { ownerRoute } from "../../../services/owner/src/http";
 import { TaskStore } from "../../../services/orchestrator/src/task-store";
 import { FileTaskPersistence } from "../../../services/orchestrator/src/task-persistence";
 import { createModelCodingHandler } from "../../../agents/coding/src/model-handler";
+import { RateLimiter } from "../../../services/rate-limit/src/index";
 
 const mime: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -31,13 +32,16 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
   const orchestrator = new KhanOrchestrator(undefined, undefined, (step, context) => owner.overview().model.enabled ? realHandler(step, context) : defaultCodingHandler(step, context), tasks, audit);
   // Every API request passes the site's authentication gate first. No key is shipped in browser assets.
   const api = createKhanApiServer(orchestrator, { auth: ApiKeyAuth.disabled() });
-  const sessions = new Map<string, { api: ReturnType<typeof createKhanApiServer>; expires: number }>();
+  const sessions = new Map<string, { api: ReturnType<typeof createKhanApiServer>; expires: number; taskCount: number }>();
+  // A shared budget also applies when a visitor discards their session cookie.
+  const demoBudget = new RateLimiter({ tasks: 60, read: 60, audit: 0 });
   const sessionLifetime = 60 * 60 * 1000;
   const site = createServer((req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "same-origin");
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     let pathname: string;
     try { pathname = decodeURIComponent(new URL(req.url ?? "/", "http://site").pathname); }
     catch { res.writeHead(400).end(); return; }
@@ -92,11 +96,28 @@ export function createOnlineServer(password: string, root = resolve("apps/web/di
           res.writeHead(503, { "Content-Type": "application/json", "Retry-After": "60" }).end('{"error":"demo_busy","detail":"The demo is busy. Please try again later."}');
           return;
         }
+        const admission = demoBudget.check("read", "new-session");
+        if (admission?.limited) {
+          res.writeHead(429, { "Content-Type": "application/json", "Retry-After": String(Math.ceil(admission.retryAfterMs / 1000)) }).end('{"error":"demo_busy","detail":"Please wait before starting another demo session."}');
+          return;
+        }
         id = randomBytes(24).toString("hex");
-        session = { api: createKhanApiServer(new KhanOrchestrator(), { auth: ApiKeyAuth.disabled() }), expires: now + sessionLifetime };
+        session = { api: createKhanApiServer(new KhanOrchestrator(), { auth: ApiKeyAuth.disabled() }), expires: now + sessionLifetime, taskCount: 0 };
         sessions.set(id, session);
         const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
         res.setHeader("Set-Cookie", `panos_demo=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600${secure}`);
+      }
+      if (req.method === "POST" && pathname === "/v1/tasks") {
+        if (session.taskCount >= 20) {
+          res.writeHead(429, { "Content-Type": "application/json", "Retry-After": String(Math.max(1, Math.ceil((session.expires - now) / 1000))) }).end('{"error":"demo_limit","detail":"This demo session has reached its task limit. Please return later."}');
+          return;
+        }
+        const budget = demoBudget.check("tasks", "all-visitors");
+        if (budget?.limited) {
+          res.writeHead(429, { "Content-Type": "application/json", "Retry-After": String(Math.ceil(budget.retryAfterMs / 1000)) }).end('{"error":"demo_busy","detail":"The demo is busy. Please try again shortly."}');
+          return;
+        }
+        session.taskCount++;
       }
       visitorApi = session.api;
     }

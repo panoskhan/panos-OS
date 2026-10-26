@@ -21,6 +21,13 @@ Confirm `/health` returns `{"status":"ok","service":"panos-os-online"}`. Opening
 
 ## Owner workspace
 
+Public demo resources are bounded independently of visitor cookies: a server-wide
+budget admits 60 new sessions and 60 task submissions per minute, and each session
+allows at most 20 task submissions over its one-hour lifetime. Excess requests
+receive HTTP 429 with Retry-After. Existing visitors can still read results and
+the owner dashboard and health checks remain accessible. These limits protect
+the demo's temporary memory; they do not turn it into a multi-user AI service.
+
 Open `/owner` and sign in as `panos` with the password in Render's SITE_PASSWORD variable. The dashboard lets you create projects, upload text files, inspect files and saved suggested diffs, run private tasks, review approvals, configure a NVIDIA model key, disable AI, set a daily call limit, and export project backups. Public demo sessions cannot access these endpoints, owner tasks, API keys, or uploaded files. Uploads are data, never executed; suggestions are proposals and never automatically applied.
 
 Private AI starts disabled. Enter your own NVIDIA API key securely in the owner dashboard, choose a model, set the daily limit, and enable it. Keys are retained server-side in a mode-0600 owner data file and excluded from API responses and project backups. This private AI client uses NVIDIA's OpenAI-compatible endpoint. One logical call runs at a time, outputs are capped at 2048 tokens, and failed calls consume the limit. Existing provider retry behavior can cause multiple provider requests per logical call. Costs are owner-entered estimates only; actual costs and token usage must be checked with the provider. Without a configured key, no live-model behavior has been verified.

@@ -7,6 +7,47 @@ import { join } from "node:path";
 import test from "node:test";
 import { createOnlineServer } from "../../apps/web/src/online-server";
 
+test("public demo bounds retained tasks and session creation even when cookies are discarded", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "panos-demo-budget-"));
+  writeFileSync(join(dir, "index.html"), "<!doctype html><title>Demo</title>");
+  const previous = process.env.KHAN_DATA_DIR;
+  process.env.KHAN_DATA_DIR = dir;
+  const server = createOnlineServer("test-only-password-12345", dir, true);
+  if (previous === undefined) delete process.env.KHAN_DATA_DIR;
+  else process.env.KHAN_DATA_DIR = previous;
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const first = await fetch(base + "/");
+    const cookie = first.headers.get("set-cookie")!.split(";")[0];
+    for (let i = 0; i < 20; i++) {
+      const response = await fetch(base + "/v1/tasks", { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ goal: "Analyze this project" }) });
+      assert.equal(response.status, 201);
+      await response.text();
+    }
+    const limited = await fetch(base + "/v1/tasks", { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ goal: "Analyze this project" }) });
+    assert.equal(limited.status, 429);
+    assert.equal((await limited.json() as { error: string }).error, "demo_limit");
+    assert.ok(Number(limited.headers.get("retry-after")) > 0);
+    assert.equal((await fetch(base + "/v1/status", { headers: { Cookie: cookie } })).status, 200, "limited visitors can still read their results");
+    let admissionStatus = 200;
+    for (let i = 0; i < 65 && admissionStatus === 200; i++) {
+      const response = await fetch(base + "/");
+      admissionStatus = response.status;
+      await response.text();
+    }
+    assert.equal(admissionStatus, 429, "discarding cookies cannot allocate unlimited session stores");
+    assert.equal((await fetch(base + "/health")).status, 200, "admission limits do not block health checks");
+    const headers = { Authorization: `Basic ${Buffer.from("panos:test-only-password-12345").toString("base64")}` };
+    assert.equal((await fetch(base + "/owner-api/overview", { headers })).status, 200, "owner access remains available during public throttling");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("online host protects the app and API, serves assets, and completes a task on the same origin", async () => {
   const dir = mkdtempSync(join(tmpdir(), "panos-online-"));
   writeFileSync(join(dir, "index.html"), "<!doctype html><title>Panos OS</title>");
