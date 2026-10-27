@@ -14,9 +14,11 @@ jobs:
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install
+        run: npm ci --include=dev
       - name: Build check
         run: npm run build
+      - name: Build hosted web assets
+        run: VITE_API_URL=/ VITE_PUBLIC_DEMO=true npm run web:build
       - name: Vertical slice tests
         run: npm test
       - name: Verify required architecture paths

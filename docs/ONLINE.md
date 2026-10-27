@@ -9,13 +9,13 @@ The Render blueprint runs the existing React app and API together over HTTPS. Th
 
 The blueprint enables a public demo: anyone can open the app, create simulated tasks, and follow their progress. Settings, audit access, approvals, cancellations, background automation, and other API routes require owner authentication. The demo hides settings and approval controls. The service still requires a suitable owner password at startup. Render supplies HTTPS; use the public service only through HTTPS. Set PUBLIC_DEMO=false and rebuild without VITE_PUBLIC_DEMO=true for the private interface.
 
-This remains a prototype: agents simulate work and model integration is not configured. Every person with the site password shares full access. Tasks are held in memory. The free plan can sleep and its filesystem is ephemeral, so restarts lose task state and may lose audit/ghost files. For retained files, use a paid service with a persistent disk and set `KHAN_AUDIT_FILE` and `KHAN_GHOST_DIR` to that disk. Persistent storage does not make in-memory tasks durable.
+The public demo simulates agent work. The owner workspace can use a configured NVIDIA model for text analysis and suggested diffs; it does not execute uploaded code, apply changes, or push to GitHub. Owner projects, settings and tasks are saved on the service filesystem. On Render Free that filesystem is ephemeral; redeploys can lose these files. Use project exports or a persistent disk as described below.
 
 ## Verify a deployment
 
 Public visitors receive an HttpOnly session cookie when opening the homepage or making their first allowed API request. Each session uses its own in-memory orchestrator, task store and audit log, so another visitor cannot read a task or its event stream even with its task ID. Sessions expire after one hour and are lost on restart; remembered browser history drops unavailable tasks. The demo admits up to 500 simultaneous sessions. Guided walkthrough buttons start analysis, testing, or an approval-gated demonstration without enabling protected actions.
 
-Confirm `/health` returns `{"status":"ok","service":"panos-os-online"}`. Opening `/` without credentials must prompt for a password. After signing in, the app should load system status and complete a read-only task. Check a task requiring approval pauses and resumes after your decision. The event stream must use the hosted site's `/v1/tasks/.../events` URL. Do not consider the deployment validated from the health check alone.
+Confirm `/health` returns `{"status":"ok","service":"panos-os-online"}`. With public demo enabled, `/` opens without credentials; `/owner` must prompt for the owner password. With public demo disabled, `/` must also prompt. After signing in, the app should load system status and complete a read-only task. Check a task requiring approval pauses and resumes after your decision. The event stream must use the hosted site's `/v1/tasks/.../events` URL. Do not consider the deployment validated from the health check alone.
 
 ## Local deployment check
 
@@ -39,3 +39,19 @@ On Render Free, use Export all projects before redeploying, then Import project 
 `render.persistent.yaml` is the prepared paid alternative: a Starter service with a 1 GB disk mounted at /var/data, and KHAN_DATA_DIR=/var/data. It has not been enabled automatically. Review Render's current service and disk charges before switching a Blueprint path or adding the disk to the existing service. The Free blueprint stays unchanged. Do not create a second service just to add storage. The backup downloads projects and usage, not API keys or private tasks; retain keys separately in your password manager.
 
 Use Node 22.22.0, then run `npm ci`, `npm run build`, and `VITE_API_URL=/ npm run web:build`. Set `SITE_PASSWORD` in the process environment and run `node --import tsx apps/web/src/online-server.ts`. This is a deployment check; the actual public URL is assigned by the host after deployment.
+
+## Setup completion checklist
+
+The owner dashboard shows four checks: durable storage configured, private AI enabled,
+provider connection tested, and project source files uploaded. Connection tests record
+only a timestamp, model identifier and success/failure; credentials and provider errors
+are excluded. The result survives restart on the same filesystem and is cleared when
+the key or model changes. It is evidence of the last test, not a continuous health check.
+Disabling AI makes its connection step incomplete; hitting a daily limit does not erase
+a successful connection test. Tests consume the configured model budget.
+
+For the custom domain, use `panos-os.panoskhan.online` in Render Custom Domains and
+point Namecheap's `panos-os` CNAME at the Render hostname shown for that service.
+Keep the root domain's existing records. Verify HTTPS, `/health`, the public demo task
+flow, and protected `/owner` access after the deployment. Never paste the owner password
+or provider key into a public chat, repository, or browser build variable.
