@@ -19,7 +19,7 @@ export async function ownerRoute(req: IncomingMessage, res: ServerResponse, work
     catch { throw new OwnerError(400, "Send a JSON object."); }
   };
   try {
-    if (path === "/owner-api/overview" && method === "GET") return send(200, { ...workspace.overview(), tasks: tasks.all().map(t => t.report) });
+    if (path === "/owner-api/overview" && method === "GET") return send(200, { ...workspace.overview(), readiness: workspace.readiness(), tasks: tasks.all().map(t => t.report) });
     if (path === "/owner-api/model" && method === "PUT") return send(200, workspace.configure(await body()));
     if (path === "/owner-api/model/test" && method === "POST") return send(200, await workspace.testConnection());
     if (path === "/owner-api/backup" && method === "POST") return send(200, workspace.restore(await body()));

@@ -5,7 +5,9 @@ import { ModelClient, DEFAULT_MODEL, DEFAULT_MODEL_BASE_URL } from "../../model-
 
 export interface ProjectFile { path: string; content: string }
 export interface Project { id: string; name: string; files: ProjectFile[]; suggestions: Array<{ at: string; text: string }>; updatedAt: string }
+interface ConnectionCheck { status: "verified" | "failed"; at: string; model: string }
 interface OwnerState {
+  connection?: ConnectionCheck;
   projects: Project[];
   model: { apiKey: string; model: string; enabled: boolean; dailyLimit: number; estimatedCostPerCall: number | null };
   usage: { day: string; calls: number; failures: number; estimatedCost: number };
@@ -39,6 +41,16 @@ export class OwnerWorkspace {
     this.resetDay();
     const { apiKey, ...model } = this.state.model;
     return { projects: this.state.projects.map(({ files, suggestions, ...project }) => ({ ...project, fileCount: files.length, suggestionCount: suggestions.length })), model: { ...model, configured: !!apiKey }, usage: { ...this.state.usage }, storage: { directory: this.directory, durable: process.env.KHAN_STORAGE_DURABLE === "true" } };
+  }
+  readiness() {
+    const overview = this.overview();
+    const checks = [
+      { id: "storage", ready: overview.storage.durable, label: "Durable storage", detail: overview.storage.durable ? "Persistent storage is configured. Keep separate backups." : "Export backups before redeploying; this filesystem is temporary. Durable storage requires a persistent disk.", href: "#storage-panel" },
+      { id: "model", ready: overview.model.configured && overview.model.enabled, label: "Private AI enabled", detail: overview.model.configured && overview.model.enabled ? "Credentials are saved and private AI is enabled." : "Save your provider key and enable private AI.", href: "#ai-panel" },
+      { id: "connection", ready: overview.model.enabled && this.state.connection?.status === "verified", label: "AI connection tested", detail: this.state.connection ? `Last test ${this.state.connection.status} at ${this.state.connection.at}. Run another test after provider changes.` : "Run Test connection to verify an actual provider response.", href: "#ai-panel" },
+      { id: "project", ready: overview.projects.some(p => p.fileCount > 0), label: "Project files uploaded", detail: "Create a project and upload text files to request concrete suggestions.", href: "#projects-panel" }
+    ];
+    return { complete: checks.filter(c => c.ready).length, total: checks.length, checks, connection: this.state.connection ?? null };
   }
   get(id: string) {
     const project = this.state.projects.find(p => p.id === id);
@@ -93,6 +105,7 @@ export class OwnerWorkspace {
       next.estimatedCostPerCall = input.estimatedCostPerCall as number | null;
     }
     if (next.enabled && !next.apiKey) throw new OwnerError(400, "Add a model API key before enabling AI.");
+    if (next.apiKey !== this.state.model.apiKey || next.model !== this.state.model.model) delete this.state.connection;
     this.state.model = next; this.save(); return this.overview();
   }
   async chat(messages: Parameters<ModelClient["chat"]>[0], options?: Parameters<ModelClient["chat"]>[1]) {
@@ -138,7 +151,18 @@ export class OwnerWorkspace {
     return { imported: additions.length, skipped: restored.length - additions.length };
   }
   async testConnection() {
-    const response = await this.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 256 });
-    return { connected: true, model: response.model };
+    const { apiKey, model } = this.state.model;
+    try {
+      const response = await this.chat([{ role: "user", content: "Reply with the single word: ready" }], { maxTokens: 256 });
+      if (this.state.model.apiKey === apiKey && this.state.model.model === model) {
+        this.state.connection = { status: "verified", at: new Date().toISOString(), model }; this.save();
+      }
+      return { connected: true, model: response.model };
+    } catch (error) {
+      if (error instanceof OwnerError && error.status === 502 && this.state.model.apiKey === apiKey && this.state.model.model === model) {
+        this.state.connection = { status: "failed", at: new Date().toISOString(), model }; this.save();
+      }
+      throw error;
+    }
   }
 }

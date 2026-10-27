@@ -128,9 +128,19 @@ test("testing an AI connection requires enablement and consumes the same budget 
     const owner = new OwnerWorkspace(directory, (apiKey, model) => new ModelClient({ apiKey, model, baseUrl: `http://127.0.0.1:${(fake.address() as AddressInfo).port}`, timeoutMs: 1000 }, Date.now, []));
     await assert.rejects(owner.testConnection(), e => e instanceof OwnerError && e.status === 409);
     owner.configure({ apiKey: "fake-key", enabled: true, dailyLimit: 1 });
+    assert.equal(owner.readiness().checks.find(c => c.id === "connection")?.ready, false);
     assert.equal((await owner.testConnection()).connected, true);
+    assert.equal(new OwnerWorkspace(directory).readiness().connection?.status, "verified");
+    assert.equal(owner.readiness().checks.find(c => c.id === "connection")?.ready, true);
     assert.equal(owner.overview().usage.calls, 1);
     await assert.rejects(owner.testConnection(), e => e instanceof OwnerError && e.status === 429);
+    assert.equal(owner.readiness().connection?.status, "verified", "budget refusal is not a failed provider connection");
+    owner.configure({ dailyLimit: 2 });
+    assert.equal(owner.readiness().connection?.status, "verified");
+    owner.configure({ model: "another/model" });
+    assert.equal(owner.readiness().connection, null, "changing the model requires a new test");
+    owner.configure({ apiKey: "replacement-key" });
+    assert.equal(JSON.stringify(owner.readiness()).includes("replacement-key"), false);
   } finally {
     fake.closeAllConnections(); await new Promise<void>(resolve => fake.close(() => resolve()));
     rmSync(directory, { recursive: true, force: true });
@@ -152,4 +162,31 @@ test("HTTP uploads preserve Greek text when UTF-8 characters cross incoming chun
     assert.equal(status, 200);
     assert.equal(owner.get(project.id).files[0].content, content);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+ test("failed provider retest replaces previous connection success and survives restart", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "panos-readiness-"));
+  let fail = false;
+  const fake = createServer((_req, res) => {
+    if (fail) res.writeHead(401).end("credential echoed by provider");
+    else res.writeHead(200).end(JSON.stringify({ choices: [{ message: { content: "ready" } }] }));
+  });
+  await new Promise<void>(resolve => fake.listen(0, "127.0.0.1", resolve));
+  try {
+    const owner = new OwnerWorkspace(directory, (apiKey, model) => new ModelClient({ apiKey, model, baseUrl: `http://127.0.0.1:${(fake.address() as AddressInfo).port}`, timeoutMs: 1000 }, Date.now, []));
+    owner.configure({ apiKey: "private-key", enabled: true });
+    await owner.testConnection();
+    fail = true;
+    await assert.rejects(owner.testConnection(), OwnerError);
+    const readiness = new OwnerWorkspace(directory).readiness();
+    assert.equal(readiness.connection?.status, "failed");
+    assert.equal(readiness.checks.find(c => c.id === "connection")?.ready, false);
+    assert.equal(JSON.stringify(readiness).includes("credential echoed"), false);
+    const project = owner.create("Ready project");
+    owner.upload(project.id, [{ path: "index.txt", content: "hello" }]);
+    assert.equal(owner.readiness().checks.find(c => c.id === "project")?.ready, true);
+  } finally {
+    fake.closeAllConnections(); await new Promise<void>(resolve => fake.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
